@@ -535,12 +535,12 @@ def generate_tests(out: Path) -> None:
     )
 
 
-def generate_report(root: Path, flashdb: Path, out: Path) -> None:
+def generate_report(root: Path, flashdb: Path, out: Path, result: Path | None = None) -> None:
     src_files = list_relative(flashdb, "src")
     test_files = list_relative(flashdb, "tests")
-    result = root / "result"
+    result = result or root / "result"
     status = "found" if flashdb.exists() else "not found in this environment"
-    now = _dt.datetime.now(_dt.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    now = _dt.datetime.now(_dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
     write(
         result / "output.md",

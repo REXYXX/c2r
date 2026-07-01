@@ -2,6 +2,8 @@
 
 本提交物提供一个更通用的 Agent Harness，而不是单次硬编码翻译脚本。评测系统只需要执行一个非交互式命令，Harness 会按阶段读取平台提供的 FlashDB C 工程，生成 Rust 项目、迁移测试，并输出每个阶段的可审计产物。
 
+本工程也包含面向 `opencode + GLM5.1` 等较弱模型的约束包。弱模型执行时必须先读取固定 API 合同、Rust 设计规则和 workflow，再进入代码生成阶段，避免模型自由发挥导致接口漂移、测试缺失或生成不可维护代码。
+
 ## 1. 环境准备
 
 需要以下命令可用：
@@ -48,19 +50,31 @@ cargo test
 
 Harness 按以下阶段执行，每个阶段都会向 `result/harness/` 写入结构化产物：
 
-1. `ProjectAnalysisAgent`：分析 C 工程，扫描源码、测试、头文件，并按 KVDB、TSDB、port/platform 归类。
-2. `SkeletonGenerationAgent`：生成可编译 Rust crate 骨架，包括 `Cargo.toml` 和 `src/lib.rs`。
-3. `ContextBuilderAgent`：为目标模块构建最小上下文，记录 `fdb_kv_`、`fdb_blob_`、`fdb_tsdb_`、`fdb_tsl_` 等符号线索。
-4. `TranslationAgent`：生成安全 Rust 实现和 Rust 测试。
-5. `CompileAgent`：执行 `cargo check`，收集编译输出。
-6. `RepairAgent`：根据编译结果生成修复判定和诊断记录。
-7. `ValidationAgent`：检查交付结构，统计 `unsafe`，并在 Cargo 可用时执行 `cargo test`。
+1. `ConstraintLoadingAgent`：读取弱模型约束文档，输出 `00-constraints.json` 和 `00-constraints.md`。
+2. `ProjectAnalysisAgent`：分析 C 工程，扫描源码、测试、头文件，并按 KVDB、TSDB、port/platform 归类。
+3. `SkeletonGenerationAgent`：生成可编译 Rust crate 骨架，包括 `Cargo.toml` 和 `src/lib.rs`。
+4. `ContextBuilderAgent`：为目标模块构建最小上下文，记录 `fdb_kv_`、`fdb_blob_`、`fdb_tsdb_`、`fdb_tsl_` 等符号线索。
+5. `TranslationAgent`：生成安全 Rust 实现和 Rust 测试。
+6. `CompileAgent`：执行 `cargo check`，收集编译输出。
+7. `RepairAgent`：根据编译结果生成修复判定和诊断记录。
+8. `ValidationAgent`：检查交付结构、固定 API 符号、`unsafe` 数量，并在 Cargo 可用时执行 `cargo test`。
 
 Agent 描述文件位于：
 
 ```text
 work/agents/flashdb-c2rust-harness.md
 ```
+
+弱模型约束文件位于：
+
+```text
+work/specs/flashdb_api_contract.md
+work/specs/rust_design_rules.md
+work/workflows/opencode_glm_flashdb_workflow.md
+work/prompts/opencode_glm_system_prompt.md
+```
+
+使用 opencode + GLM5.1 时，建议将 `work/prompts/opencode_glm_system_prompt.md` 作为系统提示词，并要求模型严格按 `work/workflows/opencode_glm_flashdb_workflow.md` 分阶段执行。
 
 ## 4. 完成判定
 
@@ -106,6 +120,7 @@ flashDB_rust/tests/tsdb_tests.rs
 ```text
 result/output.md
 result/issues/00-summary.md
+result/harness/00-constraints.json
 result/harness/00-events.json
 result/harness/01-analysis.json
 result/harness/03-context.json
