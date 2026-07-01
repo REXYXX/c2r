@@ -1,6 +1,6 @@
 # Project Analysis
 
-Source path: `../FlashDB`
+Source path: `..\FlashDB`
 
 - Source files: 5
 - Test files: 12

@@ -5,12 +5,21 @@ auditable, and easy to repair.
 
 ## Default Design
 
-- Prefer a safe, idiomatic Rust rewrite over line-by-line C emulation.
+- Prefer a safe, idiomatic Rust rewrite, but preserve FlashDB's original logic
+  structure and ownership boundaries. Do not compress the project into a tiny
+  behaviour-only model.
 - Use owned data structures first: `String`, `Vec<u8>`, `BTreeMap`, `Vec<T>`.
-- Keep module boundaries fixed:
-  - KVDB logic only in `src/kvdb.rs`
-  - TSDB logic only in `src/tsdb.rs`
-  - public exports only in `src/lib.rs`
+- Keep module boundaries fixed and close to the C project:
+  - `config.rs`, `types.rs`, `status.rs`: constants, enums, config, control commands
+  - `blob.rs`: blob buffer/saved metadata
+  - `db.rs`: common database core
+  - `file.rs`: file-mode storage abstraction
+  - `low_level.rs`: alignment, status table, flash read/write helpers
+  - `sector.rs`: KVDB/TSDB sector metadata
+  - `cache.rs`: KV and sector cache types
+  - `kvdb.rs`: KVDB-specific state machine/API
+  - `tsdb.rs`: TSDB-specific state machine/API
+  - `lib.rs`: public modules and re-exports
 - Keep all struct fields private except `TimeSeriesRecord`.
 - Keep helper functions private.
 - Return `Result` for I/O and corruption errors.
@@ -47,6 +56,25 @@ auditable, and easy to repair.
   - write to a temporary file first
   - call `sync_all`
   - rename temporary file to the final path
+
+## Structure Fidelity
+
+- Keep explicit Rust equivalents for the major C structs:
+  - `fdb_db` -> `DbCore`
+  - `fdb_kvdb` -> `KvDb`
+  - `fdb_tsdb` -> `TimeSeriesDb`
+  - `fdb_blob` -> `Blob`/`SavedBlob`
+  - `fdb_kv` -> `KvNode`
+  - `fdb_kv_iterator` -> `KvIterator`
+  - `fdb_tsl` -> `TslNode`
+  - `kvdb_sec_info` -> `KvSectorInfo`
+  - `tsdb_sec_info` -> `TsSectorInfo`
+  - `kv_cache_node` -> `KvCacheNode`
+- KVDB/TSDB modules may use high-level owned maps/vectors internally, but they
+  must still expose and maintain the translated structural state needed by the
+  original design.
+- Validation must fail if the output only contains `kvdb.rs` and `tsdb.rs` as
+  implementation modules.
 
 ## Tests
 

@@ -1,5 +1,5 @@
 {
-  "flashdb_path": "../FlashDB",
+  "flashdb_path": "..\\FlashDB",
   "flashdb_exists": true,
   "src_files": [
     "src/fdb.c",

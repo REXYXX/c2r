@@ -11,6 +11,8 @@ checkable stages and forbids broad rewrites after validation begins.
 - Follow `work/specs/rust_design_rules.md` second.
 - Treat original FlashDB C files as source context, not as files to modify.
 - Generate the Rust crate in `flashDB_rust/`.
+- Preserve the original FlashDB module structure. Do not flatten the rewrite
+  into only KVDB/TSDB files.
 - Write audit output under `result/harness/`.
 - Always create `result/`, `result/output.md`, `logs/interaction.md`, and `logs/trace/`.
 - If there is no manual intervention, keep `logs/interaction.md` as an empty file.
@@ -60,11 +62,23 @@ Required output:
 
 - `flashDB_rust/Cargo.toml`
 - `flashDB_rust/src/lib.rs`
+- `flashDB_rust/src/config.rs`
+- `flashDB_rust/src/error.rs`
+- `flashDB_rust/src/types.rs`
+- `flashDB_rust/src/status.rs`
+- `flashDB_rust/src/blob.rs`
+- `flashDB_rust/src/db.rs`
+- `flashDB_rust/src/file.rs`
+- `flashDB_rust/src/low_level.rs`
+- `flashDB_rust/src/sector.rs`
+- `flashDB_rust/src/cache.rs`
 
 Stop condition:
 
 - crate metadata is valid
 - public modules and re-exports match the API contract
+- module layout maps to `inc/fdb_def.h`, `inc/fdb_low_lvl.h`, `src/fdb.c`,
+  `src/fdb_file.c`, and `src/fdb_utils.c`
 
 ## Stage 3: KVDB
 
@@ -73,6 +87,8 @@ Required output:
 - `flashDB_rust/src/kvdb.rs`
 - KVDB tests in `flashDB_rust/tests/kvdb_tests.rs`
 - one Rust `#[test]` for every KVDB `TEST_RUN(...)` entry in `FlashDB/tests/fdb_kvdb_tc.c`
+- explicit translated structures for `fdb_kvdb`, `fdb_kv`, `fdb_kv_iterator`,
+  `kvdb_sec_info`, and `kv_cache_node`
 
 Allowed implementation:
 
@@ -92,6 +108,7 @@ Required output:
 - `flashDB_rust/src/tsdb.rs`
 - TSDB tests in `flashDB_rust/tests/tsdb_tests.rs`
 - one Rust `#[test]` for every TSDB `TEST_RUN(...)` entry in `FlashDB/tests/fdb_tsdb_tc.c`; duplicate source invocations must use stable disambiguated names
+- explicit translated structures for `fdb_tsdb`, `fdb_tsl`, and `tsdb_sec_info`
 
 Allowed implementation:
 
@@ -140,6 +157,7 @@ Required checks:
 - `logs/trace/` exists and contains engineering trace logs
 - required files exist
 - required public symbols exist
+- required structure-preserving modules exist
 - translated Rust tests cover all `FlashDB/tests` `TEST_RUN(...)` entries
 - `unsafe` occurrence count is zero
 - `cargo test` passes when Cargo is available

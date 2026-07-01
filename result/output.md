@@ -1,24 +1,25 @@
 # FlashDB Rust Conversion Execution Report
 
-Generated at: 2026-07-01T09:19:13Z
+Generated at: 2026-07-01T14:50:22Z
 
 ## Inputs
 
-- FlashDB source: `../FlashDB` (found)
-- Rust output project: `/mnt/d/c2rust/c2rust/c2rust/flashDB_rust`
-- Result directory: `/mnt/d/c2rust/c2rust/c2rust/result`
-- Logs directory: `/mnt/d/c2rust/c2rust/c2rust/logs`
+- FlashDB source: `..\FlashDB` (found)
+- Rust output project: `D:\c2rust\c2rust\c2rust\flashDB_rust`
+- Result directory: `D:\c2rust\c2rust\c2rust\result`
+- Logs directory: `D:\c2rust\c2rust\c2rust\logs`
 
 ## Execution command
 
 ```bash
-python3 work/harness/flashdb_harness.py --flashdb ../FlashDB --out /mnt/d/c2rust/c2rust/c2rust/flashDB_rust --result /mnt/d/c2rust/c2rust/c2rust/result --logs /mnt/d/c2rust/c2rust/c2rust/logs
+python3 work/harness/flashdb_harness.py --flashdb ..\FlashDB --out D:\c2rust\c2rust\c2rust\flashDB_rust --result D:\c2rust\c2rust\c2rust\result --logs D:\c2rust\c2rust\c2rust\logs
 ```
 
 ## Generated Rust project
 
-- `src/kvdb.rs`: safe Rust key-value database with string/blob values, update, delete, iteration and file persistence.
-- `src/tsdb.rs`: safe Rust time-series database with append, ordered iteration, range query, status updates, clean, latest record and file persistence.
+- Common modules: `config`, `types`, `error`, `status`, `blob`, `db`, `file`, `low_level`, `sector`, and `cache` preserve the original FlashDB support structure.
+- `src/kvdb.rs`: safe Rust key-value database with translated KV node, iterator, cache, sector, GC/recovery state, string/blob values, update, delete, iteration and file persistence.
+- `src/tsdb.rs`: safe Rust time-series database with translated TSL node, sector, rollover/control state, append, ordered iteration, range query, status updates, clean, latest record and file persistence.
 - `tests/kvdb_tests.rs`: translated coverage for all KVDB `TEST_RUN(...)` entries from `FlashDB/tests/fdb_kvdb_tc.c`.
 - `tests/tsdb_tests.rs`: translated coverage for all TSDB `TEST_RUN(...)` entries from `FlashDB/tests/fdb_tsdb_tc.c`.
 
@@ -38,8 +39,8 @@ python3 work/harness/flashdb_harness.py --flashdb ../FlashDB --out /mnt/d/c2rust
 
 ## Validation result
 
-- Validation status: `passed`
-- Cargo test status: `passed`
+- Validation status: `failed`
+- Cargo test status: `skipped`
 - Unsafe occurrences: `0`
 
 ## Required artifacts
@@ -60,16 +61,16 @@ python3 work/harness/flashdb_harness.py --flashdb ../FlashDB --out /mnt/d/c2rust
 ## Re-run instructions
 
 ```bash
-cd /mnt/d/c2rust/c2rust/c2rust/flashDB_rust
+cd D:\c2rust\c2rust\c2rust\flashDB_rust
 cargo build
 cargo test
 ```
 
-Harness artifacts are under `/mnt/d/c2rust/c2rust/c2rust/result/harness`. The detailed validation JSON is `/mnt/d/c2rust/c2rust/c2rust/result/harness/07-validation.json`.
-Human interaction records are stored in `/mnt/d/c2rust/c2rust/c2rust/logs/interaction.md`; if there is no manual intervention, that file is intentionally empty. Engineering trace logs are stored in `/mnt/d/c2rust/c2rust/c2rust/logs/trace`.
+Harness artifacts are under `D:\c2rust\c2rust\c2rust\result\harness`. The detailed validation JSON is `D:\c2rust\c2rust\c2rust\result\harness\07-validation.json`.
+Human interaction records are stored in `D:\c2rust\c2rust\c2rust\logs\interaction.md`; if there is no manual intervention, that file is intentionally empty. Engineering trace logs are stored in `D:\c2rust\c2rust\c2rust\logs\trace`.
 ## Agent harness execution
 
-Harness artifacts are available under `/mnt/d/c2rust/c2rust/c2rust/result/harness`.
+Harness artifacts are available under `D:\c2rust\c2rust\c2rust\result\harness`.
 
 - OutputScaffoldAgent: required result and logs artifact structure.
 - ConstraintLoadingAgent: weak-model API, Rust design, workflow, and prompt guardrails.

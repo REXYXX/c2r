@@ -18,6 +18,10 @@ Hard rules:
   `result/`, and `logs/`.
 - Do not modify the input FlashDB C project.
 - Generate only the Rust crate and result artifacts.
+- Preserve the original FlashDB logic structure. The Rust project must include
+  common modules for config, types, status, blob, db core, file storage,
+  low-level helpers, sector metadata, cache metadata, KVDB, and TSDB.
+- Do not collapse the rewrite into a tiny two-module behaviour model.
 - Keep the public API exactly as specified.
 - Use safe Rust only. Do not write `unsafe`.
 - Do not add external dependencies.

@@ -2,13 +2,13 @@
 
         ## Validation status
 
-        - Overall status: `passed`
-        - Cargo test status: `passed`
+        - Overall status: `failed`
+        - Cargo test status: `skipped`
         - Unsafe occurrences: `0`
 
         ## Failures
 
-        - none
+        - `cargo test skipped: cargo not found`
 
         ## Required artifact structure
 
@@ -61,4 +61,4 @@
 
         ## Known limitations
 
-        The Rust project is an idiomatic safe Rust rewrite of FlashDB behaviours exercised by the tests, not a C ABI-compatible binding. It does not modify the platform-provided FlashDB tree.
+        The Rust project is an idiomatic safe Rust rewrite that preserves FlashDB's module and state structure, but it is not a C ABI-compatible binding. It does not modify the platform-provided FlashDB tree.

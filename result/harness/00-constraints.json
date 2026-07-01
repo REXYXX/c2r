@@ -3,30 +3,30 @@
     {
       "path": "work/specs/flashdb_api_contract.md",
       "exists": true,
-      "sha256": "10924b04ea0392152997e4c2137225be3839fd2dd9d21616fad8bf0544383a45",
-      "bytes": 5040,
-      "lines": 156
+      "sha256": "ed0e15443c9af8bca7af02749c414503ce49503d77eff0dbcdc809190f576b8f",
+      "bytes": 8216,
+      "lines": 225
     },
     {
       "path": "work/specs/rust_design_rules.md",
       "exists": true,
-      "sha256": "5a0258dda02828c9882240650d851e5905d75adce333a91092131c572b33fe4b",
-      "bytes": 2827,
-      "lines": 85
+      "sha256": "e763a65b0254f80c7fd6aa9bc754afcf15e08556c3a6d33f6d618fb3fc254fa8",
+      "bytes": 4035,
+      "lines": 113
     },
     {
       "path": "work/workflows/opencode_glm_flashdb_workflow.md",
       "exists": true,
-      "sha256": "0963f54a6043a23cfa2ea9317b597767e723033afe052ff95084b478daed5f44",
-      "bytes": 4550,
-      "lines": 179
+      "sha256": "8fac421a61fa697d36fc83377e151a38e0d3ec296ce977bd0dbdaed8411d978e",
+      "bytes": 5318,
+      "lines": 197
     },
     {
       "path": "work/prompts/opencode_glm_system_prompt.md",
       "exists": true,
-      "sha256": "25786ef5ebdebadc88902e0085c63494d77d5c56cd69991bfff079942addc80d",
-      "bytes": 1716,
-      "lines": 41
+      "sha256": "15ee4a5be2beb056f5280882c079f2d32a936b994c9429d90e3b4868af2119f6",
+      "bytes": 2008,
+      "lines": 45
     }
   ]
 }

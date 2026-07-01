@@ -32,6 +32,7 @@ from convert_flashdb import (  # noqa: E402
     generate_kvdb,
     generate_lib,
     generate_report,
+    generate_support_modules,
     generate_tests,
     generate_tsdb,
     list_relative,
@@ -49,24 +50,106 @@ CONSTRAINT_FILES = [
 REQUIRED_OUTPUT_FILES = [
     "Cargo.toml",
     "src/lib.rs",
+    "src/blob.rs",
+    "src/cache.rs",
+    "src/config.rs",
+    "src/db.rs",
+    "src/error.rs",
+    "src/file.rs",
     "src/kvdb.rs",
+    "src/low_level.rs",
+    "src/sector.rs",
+    "src/status.rs",
     "src/tsdb.rs",
+    "src/types.rs",
     "tests/kvdb_tests.rs",
     "tests/tsdb_tests.rs",
 ]
 
 API_SYMBOLS = {
     "src/lib.rs": [
+        "pub mod blob;",
+        "pub mod cache;",
+        "pub mod config;",
+        "pub mod db;",
+        "pub mod error;",
+        "pub mod file;",
         "pub mod kvdb;",
+        "pub mod low_level;",
+        "pub mod sector;",
+        "pub mod status;",
         "pub mod tsdb;",
+        "pub mod types;",
+        "pub use blob::{Blob, SavedBlob};",
+        "pub use db::DbCore;",
+        "pub use error::{FlashDbError, FlashDbResult};",
         "pub use kvdb::{KvDb, KvError};",
+        "pub use status::{KvStatus, SectorDirtyStatus, SectorStoreStatus, TslStatus};",
         "pub use tsdb::{TimeSeriesDb, TimeSeriesRecord, TimeSeriesStatus, TsError};",
+        "pub use types::{DbConfig, DbControl, DbKind};",
+    ],
+    "src/config.rs": [
+        "pub const FDB_SW_VERSION",
+        "pub const FDB_WRITE_GRAN",
+        "pub fn align(",
+        "pub fn wg_align(",
+        "pub fn status_table_size(",
+    ],
+    "src/error.rs": [
+        "pub enum FlashDbError",
+        "pub type FlashDbResult",
+        "impl std::error::Error for FlashDbError",
+    ],
+    "src/types.rs": [
+        "pub enum DbKind",
+        "pub struct DbConfig",
+        "pub enum DbControl",
+    ],
+    "src/status.rs": [
+        "pub enum KvStatus",
+        "pub enum TslStatus",
+        "pub enum SectorStoreStatus",
+        "pub enum SectorDirtyStatus",
+        "pub struct StatusTable",
+    ],
+    "src/blob.rs": [
+        "pub struct SavedBlob",
+        "pub struct Blob",
+        "pub fn read_into(&self",
+    ],
+    "src/sector.rs": [
+        "pub struct KvSectorInfo",
+        "pub struct TsSectorInfo",
+    ],
+    "src/cache.rs": [
+        "pub struct KvCacheNode",
+        "pub struct SectorCache",
+    ],
+    "src/db.rs": [
+        "pub struct DbCore",
+        "pub fn control(&mut self, command: DbControl)",
+    ],
+    "src/file.rs": [
+        "pub struct FileStorage",
+        "pub fn read_at(&self",
+        "pub fn write_at(&self",
+    ],
+    "src/low_level.rs": [
+        "pub fn fdb_align(",
+        "pub fn set_status(",
+        "pub fn flash_read(",
     ],
     "src/kvdb.rs": [
         "pub enum KvError",
+        "pub struct KvNode",
+        "pub struct KvIterator",
         "pub struct KvDb",
+        "core: DbCore",
+        "cur_sector: KvSectorInfo",
+        "kv_cache_table: Vec<KvCacheNode>",
         "pub fn new() -> Self",
         "pub fn open(path: impl AsRef<Path>) -> Result<Self, KvError>",
+        "pub fn control(&mut self, command: DbControl) -> Option<u32>",
         "pub fn set(&mut self, key: impl Into<String>, value: impl AsRef<[u8]>) -> Result<(), KvError>",
         "pub fn set_str(&mut self, key: impl Into<String>, value: impl AsRef<str>) -> Result<(), KvError>",
         "pub fn get(&self, key: &str) -> Option<&[u8]>",
@@ -77,18 +160,25 @@ API_SYMBOLS = {
         "pub fn len(&self) -> usize",
         "pub fn is_empty(&self) -> bool",
         "pub fn keys(&self) -> impl Iterator<Item = &str>",
+        "pub fn iterator(&self) -> KvIterator",
+        "pub fn iterate(&self, iterator: &mut KvIterator) -> bool",
         "pub fn sync(&self) -> Result<(), KvError>",
     ],
     "src/tsdb.rs": [
         "pub enum TsError",
         "pub enum TimeSeriesStatus",
         "pub struct TimeSeriesRecord",
+        "pub struct TslNode",
         "pub timestamp: i64",
         "pub payload: Vec<u8>",
         "pub status: TimeSeriesStatus",
         "pub struct TimeSeriesDb",
+        "core: DbCore",
+        "cur_sec: TsSectorInfo",
+        "rollover: bool",
         "pub fn new() -> Self",
         "pub fn open(path: impl AsRef<Path>) -> Result<Self, TsError>",
+        "pub fn control(&mut self, command: DbControl) -> Option<u32>",
         "pub fn append(&mut self, timestamp: i64, payload: impl AsRef<[u8]>)",
         "pub fn len(&self) -> usize",
         "pub fn is_empty(&self) -> bool",
@@ -99,6 +189,7 @@ API_SYMBOLS = {
         "pub fn latest(&self) -> Option<&TimeSeriesRecord>",
         "pub fn set_status_range(&mut self, from: i64, to: i64, status: TimeSeriesStatus) -> usize",
         "pub fn clear(&mut self)",
+        "pub fn latest_node(&self) -> Option<TslNode>",
         "pub fn sync(&self) -> Result<(), TsError>",
     ],
 }
@@ -290,6 +381,7 @@ class SkeletonGenerationAgent(Agent):
     def run(self, ctx: HarnessContext) -> None:
         generate_cargo(ctx.out)
         generate_lib(ctx.out)
+        generate_support_modules(ctx.out)
         write(
             ctx.artifact("02-skeleton.md"),
             f"""
@@ -299,7 +391,7 @@ class SkeletonGenerationAgent(Agent):
 
             - `Cargo.toml`
             - `src/lib.rs`
-            - planned modules: `kvdb`, `tsdb`
+            - planned modules: `config`, `types`, `error`, `status`, `blob`, `db`, `file`, `low_level`, `sector`, `cache`, `kvdb`, `tsdb`
             """,
         )
 

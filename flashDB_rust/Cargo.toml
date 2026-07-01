@@ -1,0 +1,12 @@
+[package]
+name = "flashdb_rust"
+version = "0.1.0"
+edition = "2021"
+description = "Structure-preserving safe Rust rewrite of FlashDB for the C-to-Rust migration task"
+license = "MIT"
+
+[lib]
+name = "flashdb_rust"
+path = "src/lib.rs"
+
+[dependencies]

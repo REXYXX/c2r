@@ -1,7 +1,7 @@
 {
-  "result_dir": "/mnt/d/c2rust/c2rust/c2rust/result",
-  "required_result_output": "/mnt/d/c2rust/c2rust/c2rust/result/output.md",
-  "logs_dir": "/mnt/d/c2rust/c2rust/c2rust/logs",
-  "required_interaction_log": "/mnt/d/c2rust/c2rust/c2rust/logs/interaction.md",
-  "trace_dir": "/mnt/d/c2rust/c2rust/c2rust/logs/trace"
+  "result_dir": "D:\\c2rust\\c2rust\\c2rust\\result",
+  "required_result_output": "D:\\c2rust\\c2rust\\c2rust\\result\\output.md",
+  "logs_dir": "D:\\c2rust\\c2rust\\c2rust\\logs",
+  "required_interaction_log": "D:\\c2rust\\c2rust\\c2rust\\logs\\interaction.md",
+  "trace_dir": "D:\\c2rust\\c2rust\\c2rust\\logs\\trace"
 }
