@@ -5,13 +5,32 @@ checkable stages and forbids broad rewrites after validation begins.
 
 ## Model Operating Rules
 
+- The official opencode entrypoint is `python3 work/run_opencode_flashdb.py --flashdb /app/code/judge-assets/02_02_c_to_rust/code/FlashDB`.
+- Do not rely on manual hand-off text. The exit code and required artifact files are the delivery contract.
 - Follow `work/specs/flashdb_api_contract.md` first.
 - Follow `work/specs/rust_design_rules.md` second.
 - Treat original FlashDB C files as source context, not as files to modify.
 - Generate the Rust crate in `flashDB_rust/`.
 - Write audit output under `result/harness/`.
+- Always create `result/`, `result/output.md`, `logs/interaction.md`, and `logs/trace/`.
+- If there is no manual intervention, keep `logs/interaction.md` as an empty file.
 - Keep every stage deterministic and non-interactive.
+- Do not use `--skip-cargo` during official opencode testing.
 - Prefer boring code that compiles over clever code.
+
+## Non-Interactive Entrypoint
+
+Official opencode testing must run:
+
+```bash
+python3 work/run_opencode_flashdb.py \
+  --flashdb /app/code/judge-assets/02_02_c_to_rust/code/FlashDB
+```
+
+The wrapper runs the harness with `--strict`. Return code `0` means validation
+passed. Any non-zero return code is a failed submission. All diagnostics must be
+written under `result/` and `logs/`; no human-written completion note is
+required.
 
 ## Stage 1: Source Inventory
 
@@ -53,6 +72,7 @@ Required output:
 
 - `flashDB_rust/src/kvdb.rs`
 - KVDB tests in `flashDB_rust/tests/kvdb_tests.rs`
+- one Rust `#[test]` for every KVDB `TEST_RUN(...)` entry in `FlashDB/tests/fdb_kvdb_tc.c`
 
 Allowed implementation:
 
@@ -71,6 +91,7 @@ Required output:
 
 - `flashDB_rust/src/tsdb.rs`
 - TSDB tests in `flashDB_rust/tests/tsdb_tests.rs`
+- one Rust `#[test]` for every TSDB `TEST_RUN(...)` entry in `FlashDB/tests/fdb_tsdb_tc.c`; duplicate source invocations must use stable disambiguated names
 
 Allowed implementation:
 
@@ -112,8 +133,14 @@ cargo test
 
 Required checks:
 
+- `result/` exists
+- `result/output.md` exists and records successful output/self-validation
+- `logs/` exists
+- `logs/interaction.md` exists
+- `logs/trace/` exists and contains engineering trace logs
 - required files exist
 - required public symbols exist
+- translated Rust tests cover all `FlashDB/tests` `TEST_RUN(...)` entries
 - `unsafe` occurrence count is zero
 - `cargo test` passes when Cargo is available
 
@@ -127,6 +154,8 @@ Required output:
 
 - `result/output.md`
 - `result/issues/00-summary.md`
+- `logs/interaction.md`
+- `logs/trace/`
 
 The report must state:
 
@@ -134,6 +163,7 @@ The report must state:
 - Rust project path
 - implemented KVDB behaviours
 - implemented TSDB behaviours
+- full translated test coverage counts
 - compile/test result
 - known limitations
 
@@ -145,3 +175,4 @@ If a stage fails:
 - keep generated files for inspection
 - do not hide failure by skipping validation unless Cargo is unavailable
 - do not claim completion unless structural checks and tests pass
+- in official opencode testing, return a non-zero exit code unless `result/harness/07-validation.json` has `status: "passed"`

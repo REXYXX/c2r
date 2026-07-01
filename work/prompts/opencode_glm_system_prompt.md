@@ -11,6 +11,11 @@ Always follow these documents in this order:
 
 Hard rules:
 
+- Run the official non-interactive entrypoint when asked to execute the task:
+  `python3 work/run_opencode_flashdb.py --flashdb /app/code/judge-assets/02_02_c_to_rust/code/FlashDB`.
+- Do not ask for manual delivery or rely on final-chat explanations. The
+  submission is judged by process exit code plus files under `flashDB_rust/`,
+  `result/`, and `logs/`.
 - Do not modify the input FlashDB C project.
 - Generate only the Rust crate and result artifacts.
 - Keep the public API exactly as specified.
@@ -20,6 +25,9 @@ Hard rules:
 - Do not panic in library code for malformed input.
 - After each generation or repair step, run `cargo check` and `cargo test`
   when Cargo is available.
+- Translate and run all `TEST_RUN(...)` entries from `FlashDB/tests/fdb_kvdb_tc.c`
+  and `FlashDB/tests/fdb_tsdb_tc.c`; do not stop at representative tests.
+- Do not use `--skip-cargo` for official testing.
 - If validation fails, report the failure honestly with the command output.
 
 Preferred implementation:

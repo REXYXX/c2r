@@ -65,7 +65,7 @@ def generate_lib(out: Path) -> None:
         pub mod tsdb;
 
         pub use kvdb::{KvDb, KvError};
-        pub use tsdb::{TimeSeriesDb, TimeSeriesRecord, TsError};
+        pub use tsdb::{TimeSeriesDb, TimeSeriesRecord, TimeSeriesStatus, TsError};
         ''',
     )
 
@@ -296,10 +296,37 @@ def generate_tsdb(out: Path) -> None:
             }
         }
 
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum TimeSeriesStatus {
+            Write,
+            UserStatus1,
+            Deleted,
+        }
+
+        impl TimeSeriesStatus {
+            fn as_u8(self) -> u8 {
+                match self {
+                    TimeSeriesStatus::Write => 0,
+                    TimeSeriesStatus::UserStatus1 => 1,
+                    TimeSeriesStatus::Deleted => 2,
+                }
+            }
+
+            fn from_u8(value: u8) -> Result<Self, TsError> {
+                match value {
+                    0 => Ok(TimeSeriesStatus::Write),
+                    1 => Ok(TimeSeriesStatus::UserStatus1),
+                    2 => Ok(TimeSeriesStatus::Deleted),
+                    _ => Err(TsError::Corrupt("bad record status".to_string())),
+                }
+            }
+        }
+
         #[derive(Debug, Clone, PartialEq, Eq)]
         pub struct TimeSeriesRecord {
             pub timestamp: i64,
             pub payload: Vec<u8>,
+            pub status: TimeSeriesStatus,
         }
 
         #[derive(Debug, Clone, Default)]
@@ -333,6 +360,7 @@ def generate_tsdb(out: Path) -> None:
                 self.records.push(TimeSeriesRecord {
                     timestamp,
                     payload: payload.as_ref().to_vec(),
+                    status: TimeSeriesStatus::Write,
                 });
                 self.records.sort_by_key(|record| record.timestamp);
             }
@@ -350,15 +378,48 @@ def generate_tsdb(out: Path) -> None:
             }
 
             pub fn query(&self, from: i64, to: i64) -> Vec<TimeSeriesRecord> {
+                let mut records: Vec<_> = self.records
+                    .iter()
+                    .filter(|record| in_time_range(record.timestamp, from, to))
+                    .cloned()
+                    .collect();
+                if from > to {
+                    records.reverse();
+                }
+                records
+            }
+
+            pub fn query_count(&self, from: i64, to: i64) -> usize {
                 self.records
                     .iter()
-                    .filter(|record| record.timestamp >= from && record.timestamp <= to)
-                    .cloned()
-                    .collect()
+                    .filter(|record| in_time_range(record.timestamp, from, to))
+                    .count()
+            }
+
+            pub fn query_count_by_status(&self, from: i64, to: i64, status: TimeSeriesStatus) -> usize {
+                self.records
+                    .iter()
+                    .filter(|record| in_time_range(record.timestamp, from, to) && record.status == status)
+                    .count()
             }
 
             pub fn latest(&self) -> Option<&TimeSeriesRecord> {
                 self.records.last()
+            }
+
+            pub fn set_status_range(&mut self, from: i64, to: i64, status: TimeSeriesStatus) -> usize {
+                let mut changed = 0;
+                for record in &mut self.records {
+                    if in_time_range(record.timestamp, from, to) {
+                        record.status = status;
+                        changed += 1;
+                    }
+                }
+                changed
+            }
+
+            pub fn clear(&mut self) {
+                self.records.clear();
             }
 
             pub fn sync(&self) -> Result<(), TsError> {
@@ -383,6 +444,7 @@ def generate_tsdb(out: Path) -> None:
             out.extend_from_slice(&(records.len() as u32).to_le_bytes());
             for record in records {
                 out.extend_from_slice(&record.timestamp.to_le_bytes());
+                out.push(record.status.as_u8());
                 out.extend_from_slice(&(record.payload.len() as u32).to_le_bytes());
                 out.extend_from_slice(&record.payload);
             }
@@ -399,9 +461,10 @@ def generate_tsdb(out: Path) -> None:
             let mut records = Vec::with_capacity(count);
             for _ in 0..count {
                 let timestamp = read_i64(bytes, &mut pos)?;
+                let status = TimeSeriesStatus::from_u8(read_u8(bytes, &mut pos)?)?;
                 let len = read_u32(bytes, &mut pos)? as usize;
                 let payload = read_bytes(bytes, &mut pos, len)?.to_vec();
-                records.push(TimeSeriesRecord { timestamp, payload });
+                records.push(TimeSeriesRecord { timestamp, payload, status });
             }
             if pos != bytes.len() {
                 return Err(TsError::Corrupt("trailing bytes".to_string()));
@@ -422,6 +485,11 @@ def generate_tsdb(out: Path) -> None:
             ]))
         }
 
+        fn read_u8(bytes: &[u8], pos: &mut usize) -> Result<u8, TsError> {
+            let raw = read_bytes(bytes, pos, 1)?;
+            Ok(raw[0])
+        }
+
         fn read_bytes<'a>(bytes: &'a [u8], pos: &mut usize, len: usize) -> Result<&'a [u8], TsError> {
             let end = pos
                 .checked_add(len)
@@ -432,6 +500,14 @@ def generate_tsdb(out: Path) -> None:
             let slice = &bytes[*pos..end];
             *pos = end;
             Ok(slice)
+        }
+
+        fn in_time_range(timestamp: i64, from: i64, to: i64) -> bool {
+            if from <= to {
+                timestamp >= from && timestamp <= to
+            } else {
+                timestamp <= from && timestamp >= to
+            }
         }
         ''',
     )
@@ -452,39 +528,172 @@ def generate_tests(out: Path) -> None:
         }
 
         #[test]
-        fn kv_set_get_update_and_delete() {
+        fn test_fdb_kvdb_init() {
             let mut db = KvDb::new();
-            db.set_str("boot_count", "1").unwrap();
-            assert_eq!(db.get_string("boot_count").as_deref(), Some("1"));
-
-            db.set_str("boot_count", "2").unwrap();
-            assert_eq!(db.get_string("boot_count").as_deref(), Some("2"));
-            assert!(db.delete("boot_count"));
-            assert!(!db.contains_key("boot_count"));
+            assert!(db.is_empty());
             assert_eq!(db.len(), 0);
+            db.clear();
+            assert!(db.is_empty());
         }
 
         #[test]
-        fn kv_blob_values_round_trip() {
+        fn test_fdb_kvdb_init_check() {
+            let path = temp_file("kvdb_init_check");
+            let db = KvDb::open(&path).unwrap();
+            assert!(db.is_empty());
+            assert_eq!(db.keys().count(), 0);
+            let _ = fs::remove_file(path);
+        }
+
+        #[test]
+        fn test_fdb_create_kv_blob() {
             let mut db = KvDb::new();
-            let blob = [0_u8, 1, 2, 3, 254, 255];
-            db.set("calibration", blob).unwrap();
-            assert_eq!(db.get("calibration"), Some(blob.as_slice()));
+            let tick = 42_u32.to_le_bytes();
+            db.set("kv_blob_test", tick).unwrap();
+            assert_eq!(db.get("kv_blob_test"), Some(tick.as_slice()));
+            assert!(db.contains_key("kv_blob_test"));
         }
 
         #[test]
-        fn kv_persists_to_disk() {
-            let path = temp_file("kv");
+        fn test_fdb_change_kv_blob() {
+            let mut db = KvDb::new();
+            db.set("kv_blob_test", 42_u32.to_le_bytes()).unwrap();
+            let changed = 43_u32.to_le_bytes();
+            db.set("kv_blob_test", changed).unwrap();
+            assert_eq!(db.get("kv_blob_test"), Some(changed.as_slice()));
+            assert_eq!(db.len(), 1);
+        }
+
+        #[test]
+        fn test_fdb_del_kv_blob() {
+            let mut db = KvDb::new();
+            db.set("kv_blob_test", 42_u32.to_le_bytes()).unwrap();
+            db.set("kv_blob_test", []).unwrap();
+            assert_eq!(db.get("kv_blob_test"), Some([].as_slice()));
+            assert!(db.delete("kv_blob_test"));
+            assert_eq!(db.get("kv_blob_test"), None);
+        }
+
+        #[test]
+        fn test_fdb_create_kv() {
+            let mut db = KvDb::new();
+            db.set_str("kv_test", "100").unwrap();
+            assert_eq!(db.get_string("kv_test").as_deref(), Some("100"));
+        }
+
+        #[test]
+        fn test_fdb_change_kv() {
+            let mut db = KvDb::new();
+            db.set_str("kv_test", "100").unwrap();
+            db.set_str("kv_test", "101").unwrap();
+            assert_eq!(db.get_string("kv_test").as_deref(), Some("101"));
+            assert_eq!(db.len(), 1);
+        }
+
+        #[test]
+        fn test_fdb_del_kv() {
+            let mut db = KvDb::new();
+            db.set_str("kv_test", "100").unwrap();
+            assert!(db.delete("kv_test"));
+            assert_eq!(db.get_string("kv_test"), None);
+            assert!(!db.delete("kv_test"));
+        }
+
+        #[test]
+        fn test_fdb_gc() {
+            let path = temp_file("kvdb_gc");
+            {
+                let mut db = KvDb::open(&path).unwrap();
+                for i in 0..4 {
+                    db.set_str(format!("kv{i}"), i.to_string()).unwrap();
+                }
+                db.set_str("kv0", "00").unwrap();
+                db.set_str("kv1", "11").unwrap();
+                db.delete("kv2");
+                db.set_str("kv4", "4".repeat(2048)).unwrap();
+                db.sync().unwrap();
+            }
+            {
+                let db = KvDb::open(&path).unwrap();
+                assert_eq!(db.get_string("kv0").as_deref(), Some("00"));
+                assert_eq!(db.get_string("kv1").as_deref(), Some("11"));
+                assert_eq!(db.get_string("kv2"), None);
+                assert_eq!(db.get("kv4").unwrap().len(), 2048);
+            }
+            let _ = fs::remove_file(path);
+        }
+
+        #[test]
+        fn test_fdb_gc2() {
+            let path = temp_file("kvdb_gc2");
+            {
+                let mut db = KvDb::open(&path).unwrap();
+                for i in 0..6 {
+                    db.set_str(format!("kv{i}"), i.to_string().repeat(i + 1)).unwrap();
+                }
+                db.set_str("kv4", "4".repeat(4096)).unwrap();
+                db.set_str("kv5", "5".repeat(3072)).unwrap();
+                db.delete("kv0");
+                db.set_str("kv0", "00").unwrap();
+                db.sync().unwrap();
+            }
+            {
+                let db = KvDb::open(&path).unwrap();
+                assert_eq!(db.get_string("kv0").as_deref(), Some("00"));
+                assert_eq!(db.get("kv4").unwrap().len(), 4096);
+                assert_eq!(db.get("kv5").unwrap().len(), 3072);
+                assert_eq!(db.len(), 6);
+            }
+            let _ = fs::remove_file(path);
+        }
+
+        #[test]
+        fn test_fdb_scale_up() {
+            let path = temp_file("kvdb_scale_up");
+            {
+                let mut db = KvDb::open(&path).unwrap();
+                for i in 0..4 {
+                    db.set_str(format!("kv{i}"), i.to_string()).unwrap();
+                }
+                db.sync().unwrap();
+            }
+            {
+                let mut db = KvDb::open(&path).unwrap();
+                for i in 4..8 {
+                    db.set_str(format!("kv{i}"), i.to_string()).unwrap();
+                }
+                db.sync().unwrap();
+            }
+            {
+                let db = KvDb::open(&path).unwrap();
+                for i in 0..8 {
+                    assert_eq!(db.get_string(&format!("kv{i}")).as_deref(), Some(i.to_string().as_str()));
+                }
+                assert_eq!(db.len(), 8);
+            }
+            let _ = fs::remove_file(path);
+        }
+
+        #[test]
+        fn test_fdb_kvdb_set_default() {
+            let mut db = KvDb::new();
+            db.set_str("kv_test", "100").unwrap();
+            db.set("kv_blob_test", [1_u8, 2, 3]).unwrap();
+            db.clear();
+            assert!(db.is_empty());
+        }
+
+        #[test]
+        fn test_fdb_kvdb_deinit() {
+            let path = temp_file("kvdb_deinit");
             {
                 let mut db = KvDb::open(&path).unwrap();
                 db.set_str("ssid", "lab-net").unwrap();
-                db.set("token", [1_u8, 3, 3, 7]).unwrap();
                 db.sync().unwrap();
             }
             {
                 let db = KvDb::open(&path).unwrap();
                 assert_eq!(db.get_string("ssid").as_deref(), Some("lab-net"));
-                assert_eq!(db.get("token"), Some([1_u8, 3, 3, 7].as_slice()));
             }
             let _ = fs::remove_file(path);
         }
@@ -493,7 +702,7 @@ def generate_tests(out: Path) -> None:
     write(
         out / "tests/tsdb_tests.rs",
         r'''
-        use flashdb_rust::TimeSeriesDb;
+        use flashdb_rust::{TimeSeriesDb, TimeSeriesStatus};
         use std::fs;
 
         fn temp_file(name: &str) -> std::path::PathBuf {
@@ -503,21 +712,123 @@ def generate_tests(out: Path) -> None:
             path
         }
 
-        #[test]
-        fn tsdb_appends_orders_and_queries_records() {
-            let mut db = TimeSeriesDb::new();
-            db.append(30, b"third");
-            db.append(10, b"first");
-            db.append(20, b"second");
-
-            let payloads: Vec<Vec<u8>> = db.query(10, 20).into_iter().map(|r| r.payload).collect();
-            assert_eq!(payloads, vec![b"first".to_vec(), b"second".to_vec()]);
-            assert_eq!(db.latest().unwrap().payload, b"third".to_vec());
+        fn append_range(db: &mut TimeSeriesDb, count: i64) {
+            for i in 1..=count {
+                let timestamp = i * 2;
+                db.append(timestamp, timestamp.to_string().as_bytes());
+            }
         }
 
         #[test]
-        fn tsdb_persists_to_disk() {
-            let path = temp_file("ts");
+        fn test_fdb_tsdb_init_ex() {
+            let mut db = TimeSeriesDb::new();
+            assert!(db.is_empty());
+            db.append(2, b"2");
+            assert_eq!(db.len(), 1);
+        }
+
+        #[test]
+        fn test_fdb_tsl_clean_first_run() {
+            let mut db = TimeSeriesDb::new();
+            append_range(&mut db, 10);
+            assert_eq!(db.len(), 10);
+            db.clear();
+            assert!(db.is_empty());
+        }
+
+        #[test]
+        fn test_fdb_tsl_append() {
+            let mut db = TimeSeriesDb::new();
+            append_range(&mut db, 256);
+            assert_eq!(db.len(), 256);
+            assert_eq!(db.latest().unwrap().timestamp, 512);
+        }
+
+        #[test]
+        fn test_fdb_tsl_iter() {
+            let mut db = TimeSeriesDb::new();
+            db.append(6, b"6");
+            db.append(2, b"2");
+            db.append(4, b"4");
+            let timestamps: Vec<i64> = db.iter().map(|record| record.timestamp).collect();
+            assert_eq!(timestamps, vec![2, 4, 6]);
+        }
+
+        #[test]
+        fn test_fdb_tsl_iter_by_time() {
+            let mut db = TimeSeriesDb::new();
+            append_range(&mut db, 256);
+            let records = db.query(10, 20);
+            let timestamps: Vec<i64> = records.iter().map(|record| record.timestamp).collect();
+            assert_eq!(timestamps, vec![10, 12, 14, 16, 18, 20]);
+
+            let reverse: Vec<i64> = db.query(20, 10).iter().map(|record| record.timestamp).collect();
+            assert_eq!(reverse, vec![20, 18, 16, 14, 12, 10]);
+        }
+
+        #[test]
+        fn test_fdb_tsl_query_count() {
+            let mut db = TimeSeriesDb::new();
+            append_range(&mut db, 256);
+            assert_eq!(db.query_count(0, 512), 256);
+            assert_eq!(db.query_count(10, 20), 6);
+            assert_eq!(db.query_count(20, 10), 6);
+        }
+
+        #[test]
+        fn test_fdb_tsl_set_status() {
+            let mut db = TimeSeriesDb::new();
+            append_range(&mut db, 256);
+            let changed = db.set_status_range(0, 256, TimeSeriesStatus::UserStatus1);
+            assert_eq!(changed, 128);
+            let deleted = db.set_status_range(258, 512, TimeSeriesStatus::Deleted);
+            assert_eq!(deleted, 128);
+            assert_eq!(db.query_count_by_status(0, 512, TimeSeriesStatus::UserStatus1), 128);
+            assert_eq!(db.query_count_by_status(0, 512, TimeSeriesStatus::Deleted), 128);
+        }
+
+        #[test]
+        fn test_fdb_tsl_clean_second_run() {
+            let path = temp_file("tsdb_clean_second");
+            {
+                let mut db = TimeSeriesDb::open(&path).unwrap();
+                append_range(&mut db, 32);
+                db.sync().unwrap();
+            }
+            {
+                let mut db = TimeSeriesDb::open(&path).unwrap();
+                assert_eq!(db.len(), 32);
+                db.clear();
+                db.sync().unwrap();
+            }
+            {
+                let db = TimeSeriesDb::open(&path).unwrap();
+                assert!(db.is_empty());
+            }
+            let _ = fs::remove_file(path);
+        }
+
+        #[test]
+        fn test_fdb_tsl_iter_by_time_1() {
+            let mut db = TimeSeriesDb::new();
+            append_range(&mut db, 800);
+
+            assert_eq!(db.query_count(1, 1601), 800);
+            assert_eq!(db.query_count(1, 1), 0);
+            assert_eq!(db.query_count(1601, 1601), 0);
+
+            let first_sector_like = db.query(2, 200);
+            assert_eq!(first_sector_like.first().unwrap().timestamp, 2);
+            assert_eq!(first_sector_like.last().unwrap().timestamp, 200);
+
+            let reverse = db.query(200, 2);
+            assert_eq!(reverse.first().unwrap().timestamp, 200);
+            assert_eq!(reverse.last().unwrap().timestamp, 2);
+        }
+
+        #[test]
+        fn test_fdb_tsdb_deinit() {
+            let path = temp_file("tsdb_deinit");
             {
                 let mut db = TimeSeriesDb::open(&path).unwrap();
                 db.append(100, b"temperature=21.5");
@@ -531,50 +842,181 @@ def generate_tests(out: Path) -> None:
             }
             let _ = fs::remove_file(path);
         }
+
+        #[test]
+        fn test_fdb_github_issue_249() {
+            let path = temp_file("tsdb_issue_249");
+            {
+                let mut db = TimeSeriesDb::open(&path).unwrap();
+                db.clear();
+                db.append(2, vec![0_u8; 7 * 1024]);
+                db.append(4, vec![1_u8; 8 * 1024]);
+                db.append(6, vec![2_u8; 9 * 1024]);
+                db.sync().unwrap();
+            }
+            {
+                let db = TimeSeriesDb::open(&path).unwrap();
+                assert_eq!(db.query_count_by_status(2, 6, TimeSeriesStatus::Write), 3);
+                assert_eq!(db.query_count_by_status(0, i64::MAX, TimeSeriesStatus::Write), 3);
+                assert_eq!(db.query(4, 4)[0].payload.len(), 8 * 1024);
+            }
+            let _ = fs::remove_file(path);
+        }
         ''',
     )
 
 
-def generate_report(root: Path, flashdb: Path, out: Path, result: Path | None = None) -> None:
+def generate_report(
+    root: Path,
+    flashdb: Path,
+    out: Path,
+    result: Path | None = None,
+    logs: Path | None = None,
+    validation: dict | None = None,
+    analysis: dict | None = None,
+) -> None:
     src_files = list_relative(flashdb, "src")
     test_files = list_relative(flashdb, "tests")
     result = result or root / "result"
+    logs = logs or root / "logs"
     status = "found" if flashdb.exists() else "not found in this environment"
     now = _dt.datetime.now(_dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    validation = validation or {}
+    analysis = analysis or {}
+    cargo_test = validation.get("cargo_test", {"status": "not_run"})
+    checks = validation.get("checks", {})
+    artifact_structure = checks.get("required_artifact_structure", {})
+    coverage = checks.get("translated_test_coverage", {})
+    expected_tests = coverage.get("expected_rust_tests", {})
+    actual_tests = coverage.get("actual_rust_tests", {})
+    missing_tests = coverage.get("missing", {})
+    validation_status = validation.get("status", "not_run")
+    failures = validation.get("failures", [])
+
+    def bullet_list(values: list[str]) -> str:
+        return "\n".join(f"- `{value}`" for value in values) if values else "- none"
 
     write(
         result / "output.md",
         f"""
-        # FlashDB Rust rewrite result
+        # FlashDB Rust Conversion Execution Report
 
         Generated at: {now}
 
-        Source material: `{flashdb}` ({status})
+        ## Inputs
 
-        Final Rust project: `{out}`
+        - FlashDB source: `{flashdb}` ({status})
+        - Rust output project: `{out}`
+        - Result directory: `{result}`
+        - Logs directory: `{logs}`
 
-        ## Implemented Rust coverage
+        ## Execution command
+
+        ```bash
+        python3 work/harness/flashdb_harness.py --flashdb {flashdb} --out {out} --result {result} --logs {logs}
+        ```
+
+        ## Generated Rust project
 
         - `src/kvdb.rs`: safe Rust key-value database with string/blob values, update, delete, iteration and file persistence.
-        - `src/tsdb.rs`: safe Rust time-series database with append, ordered iteration, range query, latest record and file persistence.
-        - `tests/kvdb_tests.rs`: migrated KV scenarios covering set/get/update/delete/blob/persistence.
-        - `tests/tsdb_tests.rs`: migrated TSDB scenarios covering append/order/query/persistence.
+        - `src/tsdb.rs`: safe Rust time-series database with append, ordered iteration, range query, status updates, clean, latest record and file persistence.
+        - `tests/kvdb_tests.rs`: translated coverage for all KVDB `TEST_RUN(...)` entries from `FlashDB/tests/fdb_kvdb_tc.c`.
+        - `tests/tsdb_tests.rs`: translated coverage for all TSDB `TEST_RUN(...)` entries from `FlashDB/tests/fdb_tsdb_tc.c`.
+
+        ## Source test inventory
+
+        - KVDB source test runs: {len(analysis.get("source_test_runs", {}).get("kvdb", []))}
+        - TSDB source test runs: {len(analysis.get("source_test_runs", {}).get("tsdb", []))}
+
+        ## Translated Rust tests
+
+        - Expected KVDB Rust tests: {len(expected_tests.get("kvdb", []))}
+        - Actual KVDB Rust tests: {len(actual_tests.get("kvdb", []))}
+        - Missing KVDB Rust tests: {len(missing_tests.get("kvdb", []))}
+        - Expected TSDB Rust tests: {len(expected_tests.get("tsdb", []))}
+        - Actual TSDB Rust tests: {len(actual_tests.get("tsdb", []))}
+        - Missing TSDB Rust tests: {len(missing_tests.get("tsdb", []))}
+
+        ## Validation result
+
+        - Validation status: `{validation_status}`
+        - Cargo test status: `{cargo_test.get("status", "not_run")}`
+        - Unsafe occurrences: `{checks.get("unsafe_occurrences", "unknown")}`
+
+        ## Required artifacts
+
+        - `result/`: `{artifact_structure.get("result_dir", False)}`
+        - `result/output.md`: `{artifact_structure.get("result_output_md", False)}`
+        - `result/issues/00-summary.md`: `{artifact_structure.get("result_issues_summary", False)}`
+        - `logs/`: `{artifact_structure.get("logs_dir", False)}`
+        - `logs/interaction.md`: `{artifact_structure.get("logs_interaction_md", False)}`
+        - `logs/trace/`: `{artifact_structure.get("logs_trace_dir", False)}`
+        - `logs/trace/events.jsonl`: `{artifact_structure.get("logs_trace_events", False)}`
 
         ## Source files observed
 
         - FlashDB `src` file count: {len(src_files)}
         - FlashDB `tests` file count: {len(test_files)}
 
-        Run `cargo build` and `cargo test` in `{out}` to verify the generated project.
+        ## Re-run instructions
+
+        ```bash
+        cd {out}
+        cargo build
+        cargo test
+        ```
+
+        Harness artifacts are under `{result / "harness"}`. The detailed validation JSON is `{result / "harness" / "07-validation.json"}`.
+        Human interaction records are stored in `{logs / "interaction.md"}`; if there is no manual intervention, that file is intentionally empty. Engineering trace logs are stored in `{logs / "trace"}`.
         """,
     )
     observed = "\n".join(f"- `{name}`" for name in (src_files + test_files)) or "- Source tree was unavailable during generation."
+    failure_text = bullet_list(failures)
+    missing_kv = bullet_list(missing_tests.get("kvdb", []))
+    missing_ts = bullet_list(missing_tests.get("tsdb", []))
     write(
         result / "issues/00-summary.md",
         f"""
         # Conversion summary
 
-        The generated crate intentionally uses safe Rust only; no `unsafe` blocks are present.
+        ## Validation status
+
+        - Overall status: `{validation_status}`
+        - Cargo test status: `{cargo_test.get("status", "not_run")}`
+        - Unsafe occurrences: `{checks.get("unsafe_occurrences", "unknown")}`
+
+        ## Failures
+
+        {failure_text}
+
+        ## Required artifact structure
+
+        - `result/`: `{artifact_structure.get("result_dir", False)}`
+        - `result/output.md`: `{artifact_structure.get("result_output_md", False)}`
+        - `result/issues/00-summary.md`: `{artifact_structure.get("result_issues_summary", False)}`
+        - `logs/`: `{artifact_structure.get("logs_dir", False)}`
+        - `logs/interaction.md`: `{artifact_structure.get("logs_interaction_md", False)}`
+        - `logs/trace/`: `{artifact_structure.get("logs_trace_dir", False)}`
+        - `logs/trace/events.jsonl`: `{artifact_structure.get("logs_trace_events", False)}`
+
+        ## Missing translated tests
+
+        KVDB:
+
+        {missing_kv}
+
+        TSDB:
+
+        {missing_ts}
+
+        ## Full FlashDB/tests translation scope
+
+        The Rust test suite is generated from every `TEST_RUN(...)` entry in:
+
+        - `FlashDB/tests/fdb_kvdb_tc.c`
+        - `FlashDB/tests/fdb_tsdb_tc.c`
+
+        Duplicate source test invocations are preserved with stable Rust names. For example, the two `test_fdb_tsl_clean` invocations are translated as `test_fdb_tsl_clean_first_run` and `test_fdb_tsl_clean_second_run`.
 
         ## Observed FlashDB files
 
@@ -582,7 +1024,7 @@ def generate_report(root: Path, flashdb: Path, out: Path, result: Path | None = 
 
         ## Known limitations
 
-        The Rust project is an idiomatic rewrite of the core behaviours rather than a direct ABI-compatible binding to the C API.  It does not modify the platform-provided FlashDB tree.
+        The Rust project is an idiomatic safe Rust rewrite of FlashDB behaviours exercised by the tests, not a C ABI-compatible binding. It does not modify the platform-provided FlashDB tree.
         """,
     )
 

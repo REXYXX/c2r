@@ -1,0 +1,32 @@
+{
+  "constraints": [
+    {
+      "path": "work/specs/flashdb_api_contract.md",
+      "exists": true,
+      "sha256": "10924b04ea0392152997e4c2137225be3839fd2dd9d21616fad8bf0544383a45",
+      "bytes": 5040,
+      "lines": 156
+    },
+    {
+      "path": "work/specs/rust_design_rules.md",
+      "exists": true,
+      "sha256": "5a0258dda02828c9882240650d851e5905d75adce333a91092131c572b33fe4b",
+      "bytes": 2827,
+      "lines": 85
+    },
+    {
+      "path": "work/workflows/opencode_glm_flashdb_workflow.md",
+      "exists": true,
+      "sha256": "0963f54a6043a23cfa2ea9317b597767e723033afe052ff95084b478daed5f44",
+      "bytes": 4550,
+      "lines": 179
+    },
+    {
+      "path": "work/prompts/opencode_glm_system_prompt.md",
+      "exists": true,
+      "sha256": "25786ef5ebdebadc88902e0085c63494d77d5c56cd69991bfff079942addc80d",
+      "bytes": 1716,
+      "lines": 41
+    }
+  ]
+}

@@ -26,7 +26,7 @@ pub mod kvdb;
 pub mod tsdb;
 
 pub use kvdb::{KvDb, KvError};
-pub use tsdb::{TimeSeriesDb, TimeSeriesRecord, TsError};
+pub use tsdb::{TimeSeriesDb, TimeSeriesRecord, TimeSeriesStatus, TsError};
 ```
 
 ## KVDB Contract
@@ -89,9 +89,14 @@ Required KVDB behaviours:
 - `impl std::fmt::Display for TsError`
 - `impl std::error::Error for TsError`
 - `impl From<std::io::Error> for TsError`
+- `pub enum TimeSeriesStatus`
+  - `Write`
+  - `UserStatus1`
+  - `Deleted`
 - `pub struct TimeSeriesRecord`
   - `pub timestamp: i64`
   - `pub payload: Vec<u8>`
+  - `pub status: TimeSeriesStatus`
   - derives `Debug`, `Clone`, `PartialEq`, `Eq`
 - `pub struct TimeSeriesDb`
   - fields must be private
@@ -108,7 +113,11 @@ impl TimeSeriesDb {
     pub fn is_empty(&self) -> bool;
     pub fn iter(&self) -> impl Iterator<Item = &TimeSeriesRecord>;
     pub fn query(&self, from: i64, to: i64) -> Vec<TimeSeriesRecord>;
+    pub fn query_count(&self, from: i64, to: i64) -> usize;
+    pub fn query_count_by_status(&self, from: i64, to: i64, status: TimeSeriesStatus) -> usize;
     pub fn latest(&self) -> Option<&TimeSeriesRecord>;
+    pub fn set_status_range(&mut self, from: i64, to: i64, status: TimeSeriesStatus) -> usize;
+    pub fn clear(&mut self);
     pub fn sync(&self) -> Result<(), TsError>;
 }
 ```
@@ -117,8 +126,12 @@ Required TSDB behaviours:
 
 - `append` must copy payload bytes into owned storage.
 - Records must be observed in ascending timestamp order.
-- `query(from, to)` must be inclusive at both ends.
+- `query(from, to)` must be inclusive at both ends and support reverse ranges.
+- `query_count` must count all records in the inclusive range.
+- `query_count_by_status` must count only records with the requested status.
 - `latest` must return the greatest timestamp record.
+- `set_status_range` must update matching records and return the number changed.
+- `clear` must remove all records.
 - `open` must load previously synced records from disk.
 - `sync` must persist all current records and create parent directories when needed.
 - Corrupt persisted data must return `TsError::Corrupt`.

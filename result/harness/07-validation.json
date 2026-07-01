@@ -1,0 +1,150 @@
+{
+  "status": "passed",
+  "failures": [],
+  "checks": {
+    "required_artifact_structure": {
+      "result_dir": true,
+      "result_output_md": true,
+      "result_issues_summary": true,
+      "logs_dir": true,
+      "logs_interaction_md": true,
+      "logs_trace_dir": true,
+      "logs_trace_events": true
+    },
+    "constraint_docs": {
+      "work/specs/flashdb_api_contract.md": true,
+      "work/specs/rust_design_rules.md": true,
+      "work/workflows/opencode_glm_flashdb_workflow.md": true,
+      "work/prompts/opencode_glm_system_prompt.md": true
+    },
+    "required_files": {
+      "Cargo.toml": true,
+      "src/lib.rs": true,
+      "src/kvdb.rs": true,
+      "src/tsdb.rs": true,
+      "tests/kvdb_tests.rs": true,
+      "tests/tsdb_tests.rs": true
+    },
+    "api_symbols": {
+      "src/lib.rs": {
+        "ok": true,
+        "missing": []
+      },
+      "src/kvdb.rs": {
+        "ok": true,
+        "missing": []
+      },
+      "src/tsdb.rs": {
+        "ok": true,
+        "missing": []
+      }
+    },
+    "translated_test_coverage": {
+      "source_runs": {
+        "kvdb": [
+          "test_fdb_kvdb_init",
+          "test_fdb_kvdb_init_check",
+          "test_fdb_create_kv_blob",
+          "test_fdb_change_kv_blob",
+          "test_fdb_del_kv_blob",
+          "test_fdb_create_kv",
+          "test_fdb_change_kv",
+          "test_fdb_del_kv",
+          "test_fdb_gc",
+          "test_fdb_gc2",
+          "test_fdb_scale_up",
+          "test_fdb_kvdb_set_default",
+          "test_fdb_kvdb_deinit"
+        ],
+        "tsdb": [
+          "test_fdb_tsdb_init_ex",
+          "test_fdb_tsl_clean",
+          "test_fdb_tsl_append",
+          "test_fdb_tsl_iter",
+          "test_fdb_tsl_iter_by_time",
+          "test_fdb_tsl_query_count",
+          "test_fdb_tsl_set_status",
+          "test_fdb_tsl_clean",
+          "test_fdb_tsl_iter_by_time_1",
+          "test_fdb_tsdb_deinit",
+          "test_fdb_github_issue_249"
+        ]
+      },
+      "expected_rust_tests": {
+        "kvdb": [
+          "test_fdb_kvdb_init",
+          "test_fdb_kvdb_init_check",
+          "test_fdb_create_kv_blob",
+          "test_fdb_change_kv_blob",
+          "test_fdb_del_kv_blob",
+          "test_fdb_create_kv",
+          "test_fdb_change_kv",
+          "test_fdb_del_kv",
+          "test_fdb_gc",
+          "test_fdb_gc2",
+          "test_fdb_scale_up",
+          "test_fdb_kvdb_set_default",
+          "test_fdb_kvdb_deinit"
+        ],
+        "tsdb": [
+          "test_fdb_tsdb_init_ex",
+          "test_fdb_tsl_clean_first_run",
+          "test_fdb_tsl_append",
+          "test_fdb_tsl_iter",
+          "test_fdb_tsl_iter_by_time",
+          "test_fdb_tsl_query_count",
+          "test_fdb_tsl_set_status",
+          "test_fdb_tsl_clean_second_run",
+          "test_fdb_tsl_iter_by_time_1",
+          "test_fdb_tsdb_deinit",
+          "test_fdb_github_issue_249"
+        ]
+      },
+      "actual_rust_tests": {
+        "kvdb": [
+          "test_fdb_kvdb_init",
+          "test_fdb_kvdb_init_check",
+          "test_fdb_create_kv_blob",
+          "test_fdb_change_kv_blob",
+          "test_fdb_del_kv_blob",
+          "test_fdb_create_kv",
+          "test_fdb_change_kv",
+          "test_fdb_del_kv",
+          "test_fdb_gc",
+          "test_fdb_gc2",
+          "test_fdb_scale_up",
+          "test_fdb_kvdb_set_default",
+          "test_fdb_kvdb_deinit"
+        ],
+        "tsdb": [
+          "test_fdb_tsdb_init_ex",
+          "test_fdb_tsl_clean_first_run",
+          "test_fdb_tsl_append",
+          "test_fdb_tsl_iter",
+          "test_fdb_tsl_iter_by_time",
+          "test_fdb_tsl_query_count",
+          "test_fdb_tsl_set_status",
+          "test_fdb_tsl_clean_second_run",
+          "test_fdb_tsl_iter_by_time_1",
+          "test_fdb_tsdb_deinit",
+          "test_fdb_github_issue_249"
+        ]
+      },
+      "missing": {
+        "kvdb": [],
+        "tsdb": []
+      }
+    },
+    "unsafe_occurrences": 0
+  },
+  "cargo_test": {
+    "status": "passed",
+    "command": [
+      "cargo",
+      "test"
+    ],
+    "returncode": 0,
+    "stdout": "\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 13 tests\ntest test_fdb_change_kv ... ok\ntest test_fdb_change_kv_blob ... ok\ntest test_fdb_create_kv ... ok\ntest test_fdb_del_kv_blob ... ok\ntest test_fdb_del_kv ... ok\ntest test_fdb_create_kv_blob ... ok\ntest test_fdb_kvdb_init_check ... ok\ntest test_fdb_kvdb_init ... ok\ntest test_fdb_kvdb_set_default ... ok\ntest test_fdb_gc2 ... ok\ntest test_fdb_gc ... ok\ntest test_fdb_kvdb_deinit ... ok\ntest test_fdb_scale_up ... ok\n\ntest result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s\n\n\nrunning 11 tests\ntest test_fdb_tsdb_init_ex ... ok\ntest test_fdb_tsl_clean_first_run ... ok\ntest test_fdb_tsl_iter ... ok\ntest test_fdb_tsl_append ... ok\ntest test_fdb_tsl_iter_by_time ... ok\ntest test_fdb_tsl_set_status ... ok\ntest test_fdb_tsl_query_count ... ok\ntest test_fdb_tsl_iter_by_time_1 ... ok\ntest test_fdb_github_issue_249 ... ok\ntest test_fdb_tsdb_deinit ... ok\ntest test_fdb_tsl_clean_second_run ... ok\n\ntest result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n",
+    "stderr": "   Compiling flashdb_rust v0.1.0 (/mnt/d/c2rust/c2rust/c2rust/flashDB_rust)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.19s\n     Running unittests src/lib.rs (target/debug/deps/flashdb_rust-e16087dc7ea24b70)\n     Running tests/kvdb_tests.rs (target/debug/deps/kvdb_tests-bf3efdea7d5eff59)\n     Running tests/tsdb_tests.rs (target/debug/deps/tsdb_tests-b5477627dce5a7bd)\n   Doc-tests flashdb_rust\n"
+  }
+}

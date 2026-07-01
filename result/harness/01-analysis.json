@@ -1,0 +1,84 @@
+{
+  "flashdb_path": "../FlashDB",
+  "flashdb_exists": true,
+  "src_files": [
+    "src/fdb.c",
+    "src/fdb_file.c",
+    "src/fdb_kvdb.c",
+    "src/fdb_tsdb.c",
+    "src/fdb_utils.c"
+  ],
+  "test_files": [
+    "tests/Makefile",
+    "tests/README_test.md",
+    "tests/benchmark/Makefile",
+    "tests/benchmark/bench_main.c",
+    "tests/benchmark/fdb_cfg.h",
+    "tests/fdb_cfg.h",
+    "tests/fdb_kvdb_tc.c",
+    "tests/fdb_tsdb_tc.c",
+    "tests/kvdb_main.c",
+    "tests/main.c",
+    "tests/test_helpers.h",
+    "tests/tsdb_main.c"
+  ],
+  "include_files": [
+    "inc/fdb_cfg_template.h",
+    "inc/fdb_def.h",
+    "inc/fdb_low_lvl.h",
+    "inc/flashdb.h"
+  ],
+  "components": {
+    "kvdb": [
+      "src/fdb_kvdb.c",
+      "tests/fdb_kvdb_tc.c",
+      "tests/kvdb_main.c"
+    ],
+    "tsdb": [
+      "src/fdb_tsdb.c",
+      "tests/Makefile",
+      "tests/README_test.md",
+      "tests/benchmark/Makefile",
+      "tests/benchmark/bench_main.c",
+      "tests/benchmark/fdb_cfg.h",
+      "tests/fdb_cfg.h",
+      "tests/fdb_kvdb_tc.c",
+      "tests/fdb_tsdb_tc.c",
+      "tests/kvdb_main.c",
+      "tests/main.c",
+      "tests/test_helpers.h",
+      "tests/tsdb_main.c"
+    ],
+    "port": []
+  },
+  "source_test_runs": {
+    "kvdb": [
+      "test_fdb_kvdb_init",
+      "test_fdb_kvdb_init_check",
+      "test_fdb_create_kv_blob",
+      "test_fdb_change_kv_blob",
+      "test_fdb_del_kv_blob",
+      "test_fdb_create_kv",
+      "test_fdb_change_kv",
+      "test_fdb_del_kv",
+      "test_fdb_gc",
+      "test_fdb_gc2",
+      "test_fdb_scale_up",
+      "test_fdb_kvdb_set_default",
+      "test_fdb_kvdb_deinit"
+    ],
+    "tsdb": [
+      "test_fdb_tsdb_init_ex",
+      "test_fdb_tsl_clean",
+      "test_fdb_tsl_append",
+      "test_fdb_tsl_iter",
+      "test_fdb_tsl_iter_by_time",
+      "test_fdb_tsl_query_count",
+      "test_fdb_tsl_set_status",
+      "test_fdb_tsl_clean",
+      "test_fdb_tsl_iter_by_time_1",
+      "test_fdb_tsdb_deinit",
+      "test_fdb_github_issue_249"
+    ]
+  }
+}

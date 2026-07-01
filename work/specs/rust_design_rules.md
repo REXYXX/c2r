@@ -50,15 +50,27 @@ auditable, and easy to repair.
 
 ## Tests
 
-The generated tests must cover at least:
+The generated tests must cover every `TEST_RUN(...)` entry in
+`FlashDB/tests/fdb_kvdb_tc.c` and `FlashDB/tests/fdb_tsdb_tc.c`. Duplicate source
+invocations must be preserved with stable Rust names.
+
+The translated tests must include:
 
 - KVDB string set/get/update/delete
 - KVDB binary blob round trip
 - KVDB persistence across `open` calls
+- KVDB GC-like repeated update/delete/persistence scenarios
+- KVDB scale-up-like reopen and growth scenario
+- KVDB set-default/clear scenario
 - TSDB append with out-of-order timestamps
 - TSDB inclusive range query
+- TSDB reverse range query
+- TSDB query count
+- TSDB status update/count
+- TSDB clean
 - TSDB latest record
 - TSDB persistence across `open` calls
+- TSDB large-payload regression scenario equivalent to GitHub issue 249
 
 ## Repair Rules
 

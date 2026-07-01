@@ -1,0 +1,10 @@
+{
+  "status": "passed",
+  "command": [
+    "cargo",
+    "check"
+  ],
+  "returncode": 0,
+  "stdout": "",
+  "stderr": "    Checking flashdb_rust v0.1.0 (/mnt/d/c2rust/c2rust/c2rust/flashDB_rust)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.35s\n"
+}
