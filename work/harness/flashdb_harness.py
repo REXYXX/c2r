@@ -1,344 +1,96 @@
 #!/usr/bin/env python3
-"""Agent-style harness for the FlashDB C-to-Rust migration task.
+"""FlashDB profile harness for the reusable C-to-Rust conversion framework.
 
-The harness is intentionally deterministic and non-interactive so the judge can
-run it as a normal command.  Each phase is represented as a small agent that
-accepts a shared context, writes trace artifacts, and passes control to the next
-phase.
+The generic harness owns deterministic orchestration, trace artifacts, command
+execution, and shared validation helpers.  FlashDB-specific constraints live in
+`work/profiles/flashdb.md`, while this module only wires those constraints to
+the FlashDB source analyzer, generator, and validator.
 """
 
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import re
 import shutil
-import subprocess
 import sys
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 WORK = ROOT / "work"
-if str(WORK) not in sys.path:
-    sys.path.insert(0, str(WORK))
+HARNESS = WORK / "harness"
+for path in (WORK, HARNESS):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
 
 from convert_flashdb import (  # noqa: E402
     DEFAULT_FLASHDB,
-    generate_cargo,
-    generate_kvdb,
-    generate_lib,
+    generate_model_brief,
     generate_report,
-    generate_support_modules,
-    generate_tests,
-    generate_tsdb,
+    generate_workspace_scaffold,
     list_relative,
+)
+from generic_harness import (  # noqa: E402
+    Agent,
+    CompileAgent,
+    ConstraintLoadingAgent,
+    ConversionContext,
+    OutputScaffoldAgent,
+    RepairAgent,
+    check_artifact_structure,
+    check_required_files,
+    check_token_map,
+    count_token_in_rust,
+    load_markdown_profile,
+    read_text,
+    run_agents,
+    run_cargo,
+    text_block,
     write,
 )
 
 
-CONSTRAINT_FILES = [
-    "work/specs/flashdb_api_contract.md",
-    "work/specs/rust_design_rules.md",
-    "work/workflows/opencode_glm_flashdb_workflow.md",
-    "work/prompts/opencode_glm_system_prompt.md",
-]
-
-REQUIRED_OUTPUT_FILES = [
-    "Cargo.toml",
-    "src/lib.rs",
-    "src/blob.rs",
-    "src/cache.rs",
-    "src/config.rs",
-    "src/db.rs",
-    "src/error.rs",
-    "src/file.rs",
-    "src/kvdb.rs",
-    "src/low_level.rs",
-    "src/sector.rs",
-    "src/status.rs",
-    "src/tsdb.rs",
-    "src/types.rs",
-    "tests/kvdb_tests.rs",
-    "tests/tsdb_tests.rs",
-]
-
-API_SYMBOLS = {
-    "src/lib.rs": [
-        "pub mod blob;",
-        "pub mod cache;",
-        "pub mod config;",
-        "pub mod db;",
-        "pub mod error;",
-        "pub mod file;",
-        "pub mod kvdb;",
-        "pub mod low_level;",
-        "pub mod sector;",
-        "pub mod status;",
-        "pub mod tsdb;",
-        "pub mod types;",
-        "pub use blob::{Blob, SavedBlob};",
-        "pub use db::DbCore;",
-        "pub use error::{FlashDbError, FlashDbResult};",
-        "pub use kvdb::{KvDb, KvError};",
-        "pub use status::{KvStatus, SectorDirtyStatus, SectorStoreStatus, TslStatus};",
-        "pub use tsdb::{TimeSeriesDb, TimeSeriesRecord, TimeSeriesStatus, TsError};",
-        "pub use types::{DbConfig, DbControl, DbKind};",
-    ],
-    "src/config.rs": [
-        "pub const FDB_SW_VERSION",
-        "pub const FDB_WRITE_GRAN",
-        "pub fn align(",
-        "pub fn wg_align(",
-        "pub fn status_table_size(",
-    ],
-    "src/error.rs": [
-        "pub enum FlashDbError",
-        "pub type FlashDbResult",
-        "impl std::error::Error for FlashDbError",
-    ],
-    "src/types.rs": [
-        "pub enum DbKind",
-        "pub struct DbConfig",
-        "pub enum DbControl",
-    ],
-    "src/status.rs": [
-        "pub enum KvStatus",
-        "pub enum TslStatus",
-        "pub enum SectorStoreStatus",
-        "pub enum SectorDirtyStatus",
-        "pub struct StatusTable",
-    ],
-    "src/blob.rs": [
-        "pub struct SavedBlob",
-        "pub struct Blob",
-        "pub fn read_into(&self",
-    ],
-    "src/sector.rs": [
-        "pub struct KvSectorInfo",
-        "pub struct TsSectorInfo",
-    ],
-    "src/cache.rs": [
-        "pub struct KvCacheNode",
-        "pub struct SectorCache",
-    ],
-    "src/db.rs": [
-        "pub struct DbCore",
-        "pub fn control(&mut self, command: DbControl)",
-    ],
-    "src/file.rs": [
-        "pub struct FileStorage",
-        "pub fn read_at(&self",
-        "pub fn write_at(&self",
-    ],
-    "src/low_level.rs": [
-        "pub fn fdb_align(",
-        "pub fn set_status(",
-        "pub fn flash_read(",
-    ],
-    "src/kvdb.rs": [
-        "pub enum KvError",
-        "pub struct KvNode",
-        "pub struct KvIterator",
-        "pub struct KvDb",
-        "core: DbCore",
-        "cur_sector: KvSectorInfo",
-        "kv_cache_table: Vec<KvCacheNode>",
-        "pub fn new() -> Self",
-        "pub fn open(path: impl AsRef<Path>) -> Result<Self, KvError>",
-        "pub fn control(&mut self, command: DbControl) -> Option<u32>",
-        "pub fn set(&mut self, key: impl Into<String>, value: impl AsRef<[u8]>) -> Result<(), KvError>",
-        "pub fn set_str(&mut self, key: impl Into<String>, value: impl AsRef<str>) -> Result<(), KvError>",
-        "pub fn get(&self, key: &str) -> Option<&[u8]>",
-        "pub fn get_string(&self, key: &str) -> Option<String>",
-        "pub fn contains_key(&self, key: &str) -> bool",
-        "pub fn delete(&mut self, key: &str) -> bool",
-        "pub fn clear(&mut self)",
-        "pub fn len(&self) -> usize",
-        "pub fn is_empty(&self) -> bool",
-        "pub fn keys(&self) -> impl Iterator<Item = &str>",
-        "pub fn iterator(&self) -> KvIterator",
-        "pub fn iterate(&self, iterator: &mut KvIterator) -> bool",
-        "pub fn sync(&self) -> Result<(), KvError>",
-    ],
-    "src/tsdb.rs": [
-        "pub enum TsError",
-        "pub enum TimeSeriesStatus",
-        "pub struct TimeSeriesRecord",
-        "pub struct TslNode",
-        "pub timestamp: i64",
-        "pub payload: Vec<u8>",
-        "pub status: TimeSeriesStatus",
-        "pub struct TimeSeriesDb",
-        "core: DbCore",
-        "cur_sec: TsSectorInfo",
-        "rollover: bool",
-        "pub fn new() -> Self",
-        "pub fn open(path: impl AsRef<Path>) -> Result<Self, TsError>",
-        "pub fn control(&mut self, command: DbControl) -> Option<u32>",
-        "pub fn append(&mut self, timestamp: i64, payload: impl AsRef<[u8]>)",
-        "pub fn len(&self) -> usize",
-        "pub fn is_empty(&self) -> bool",
-        "pub fn iter(&self) -> impl Iterator<Item = &TimeSeriesRecord>",
-        "pub fn query(&self, from: i64, to: i64) -> Vec<TimeSeriesRecord>",
-        "pub fn query_count(&self, from: i64, to: i64) -> usize",
-        "pub fn query_count_by_status(&self, from: i64, to: i64, status: TimeSeriesStatus) -> usize",
-        "pub fn latest(&self) -> Option<&TimeSeriesRecord>",
-        "pub fn set_status_range(&mut self, from: i64, to: i64, status: TimeSeriesStatus) -> usize",
-        "pub fn clear(&mut self)",
-        "pub fn latest_node(&self) -> Option<TslNode>",
-        "pub fn sync(&self) -> Result<(), TsError>",
-    ],
-}
-
-TSDB_DUPLICATE_TEST_NAME_MAP = {
-    ("test_fdb_tsl_clean", 1): "test_fdb_tsl_clean_first_run",
-    ("test_fdb_tsl_clean", 2): "test_fdb_tsl_clean_second_run",
+PROFILE_PATH = WORK / "profiles" / "flashdb.md"
+PROFILE = load_markdown_profile(PROFILE_PATH)
+DUPLICATE_TEST_NAME_MAP = {
+    (item["suite"], item["source"], item["occurrence"]): item["target"]
+    for item in PROFILE.get("duplicate_test_name_map", [])
 }
 
 
-@dataclass
-class HarnessContext:
-    root: Path
-    flashdb: Path
-    out: Path
-    result: Path
-    logs: Path
-    cargo: str = "cargo"
-    skip_cargo: bool = False
-    analysis: dict[str, Any] = field(default_factory=dict)
-    context_index: dict[str, Any] = field(default_factory=dict)
-    compile_result: dict[str, Any] = field(default_factory=dict)
-    validation_result: dict[str, Any] = field(default_factory=dict)
-    constraints: list[dict[str, Any]] = field(default_factory=list)
-    events: list[dict[str, Any]] = field(default_factory=list)
-
-    def artifact(self, relative: str) -> Path:
-        return self.result / "harness" / relative
-
-    def trace_artifact(self, relative: str) -> Path:
-        return self.logs / "trace" / relative
-
-    def log(self, agent: str, status: str, **data: Any) -> None:
-        event = {
-            "time": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
-            "agent": agent,
-            "status": status,
-            **data,
-        }
-        self.events.append(event)
-        trace_path = self.trace_artifact("events.jsonl")
-        trace_path.parent.mkdir(parents=True, exist_ok=True)
-        with trace_path.open("a", encoding="utf-8", newline="\n") as file:
-            file.write(json.dumps(event, ensure_ascii=False) + "\n")
-
-
-class Agent:
-    name = "Agent"
-
-    def run(self, ctx: HarnessContext) -> None:
-        raise NotImplementedError
-
-    def __call__(self, ctx: HarnessContext) -> None:
-        ctx.log(self.name, "started")
-        self.run(ctx)
-        ctx.log(self.name, "completed")
-
-
-class OutputScaffoldAgent(Agent):
-    name = "OutputScaffoldAgent"
-
-    def run(self, ctx: HarnessContext) -> None:
-        ctx.result.mkdir(parents=True, exist_ok=True)
-        (ctx.result / "issues").mkdir(parents=True, exist_ok=True)
-        (ctx.result / "harness").mkdir(parents=True, exist_ok=True)
-        ctx.logs.mkdir(parents=True, exist_ok=True)
-        (ctx.logs / "trace").mkdir(parents=True, exist_ok=True)
-        interaction = ctx.logs / "interaction.md"
-        if not interaction.exists():
-            write(interaction, "")
-        write(
-            ctx.trace_artifact("scaffold.json"),
-            json.dumps(
-                {
-                    "result_dir": str(ctx.result),
-                    "required_result_output": str(ctx.result / "output.md"),
-                    "logs_dir": str(ctx.logs),
-                    "required_interaction_log": str(interaction),
-                    "trace_dir": str(ctx.logs / "trace"),
-                },
-                indent=2,
-                ensure_ascii=False,
-            ),
-        )
-
-
-class ConstraintLoadingAgent(Agent):
-    name = "ConstraintLoadingAgent"
-
-    def run(self, ctx: HarnessContext) -> None:
-        constraints = []
-        for relative in CONSTRAINT_FILES:
-            path = ctx.root / relative
-            item: dict[str, Any] = {
-                "path": relative,
-                "exists": path.exists(),
-            }
-            if path.exists():
-                text = path.read_text(encoding="utf-8", errors="ignore")
-                item.update(
-                    {
-                        "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
-                        "bytes": len(text.encode("utf-8")),
-                        "lines": text.count("\n") + 1 if text else 0,
-                    }
-                )
-            constraints.append(item)
-        ctx.constraints = constraints
-        write(ctx.artifact("00-constraints.json"), json.dumps({"constraints": constraints}, indent=2, ensure_ascii=False))
-        write(
-            ctx.artifact("00-constraints.md"),
-            """
-            # Constraint Loading
-
-            The harness loaded the fixed weak-model guardrails before source analysis.
-
-            Required documents:
-
-            - `work/specs/flashdb_api_contract.md`
-            - `work/specs/rust_design_rules.md`
-            - `work/workflows/opencode_glm_flashdb_workflow.md`
-            - `work/prompts/opencode_glm_system_prompt.md`
-
-            These files constrain public API shape, Rust design choices, workflow stages, validation, and the opencode+GLM prompt.
-            """,
-        )
+class HarnessContext(ConversionContext):
+    @property
+    def flashdb(self) -> Path:
+        return self.source
 
 
 class ProjectAnalysisAgent(Agent):
     name = "ProjectAnalysisAgent"
 
-    def run(self, ctx: HarnessContext) -> None:
-        src_files = list_relative(ctx.flashdb, "src")
-        test_files = list_relative(ctx.flashdb, "tests")
-        include_files = list_relative(ctx.flashdb, "inc") + list_relative(ctx.flashdb, "include")
+    def run(self, ctx: ConversionContext) -> None:
+        layout = PROFILE["source_layout"]
+        src_files = self._list_many(ctx.source, layout["source_dirs"])
+        test_files = self._list_many(ctx.source, layout["test_dirs"])
+        include_files = self._list_many(ctx.source, layout["include_dirs"])
+        all_files = src_files + include_files + test_files
         components = {
-            "kvdb": [name for name in src_files + include_files + test_files if "kv" in name.lower()],
-            "tsdb": [name for name in src_files + include_files + test_files if "ts" in name.lower()],
-            "port": [name for name in src_files + include_files if "port" in name.lower()],
+            name: [path for path in all_files if any(token in path.lower() for token in tokens)]
+            for name, tokens in PROFILE["component_filters"].items()
         }
-        source_test_runs = self._collect_source_test_runs(ctx.flashdb)
+        source_test_runs = self._collect_source_test_runs(ctx.source)
+        public_apis = self._collect_public_apis(ctx.source / layout["public_api_header"])
+        internal_anchors = self._collect_internal_anchors(ctx.source)
         ctx.analysis = {
-            "flashdb_path": str(ctx.flashdb),
-            "flashdb_exists": ctx.flashdb.exists(),
+            "flashdb_path": str(ctx.source),
+            "flashdb_exists": ctx.source.exists(),
             "src_files": src_files,
             "test_files": test_files,
             "include_files": include_files,
             "components": components,
             "source_test_runs": source_test_runs,
+            "public_apis": public_apis,
+            "internal_parity_anchors": internal_anchors,
         }
         write(ctx.artifact("01-analysis.json"), json.dumps(ctx.analysis, indent=2, ensure_ascii=False))
         write(
@@ -346,7 +98,7 @@ class ProjectAnalysisAgent(Agent):
             f"""
             # Project Analysis
 
-            Source path: `{ctx.flashdb}`
+            Source path: `{ctx.source}`
 
             - Source files: {len(src_files)}
             - Test files: {len(test_files)}
@@ -359,39 +111,64 @@ class ProjectAnalysisAgent(Agent):
             - Port/platform files: {len(components["port"])}
             - KVDB TEST_RUN entries: {len(source_test_runs["kvdb"])}
             - TSDB TEST_RUN entries: {len(source_test_runs["tsdb"])}
+            - Public FlashDB API entries: {len(public_apis)}
+            - Internal parity anchor groups: {len(internal_anchors)}
             """,
         )
 
+    def _list_many(self, root: Path, subdirs: list[str]) -> list[str]:
+        files: list[str] = []
+        for subdir in subdirs:
+            files.extend(list_relative(root, subdir))
+        return files
+
     def _collect_source_test_runs(self, flashdb: Path) -> dict[str, list[str]]:
         return {
-            "kvdb": self._test_runs_from_file(flashdb / "tests" / "fdb_kvdb_tc.c"),
-            "tsdb": self._test_runs_from_file(flashdb / "tests" / "fdb_tsdb_tc.c"),
+            name: self._test_runs_from_file(flashdb / spec["source"])
+            for name, spec in PROFILE["test_suites"].items()
         }
 
     def _test_runs_from_file(self, path: Path) -> list[str]:
         if not path.exists():
             return []
         text = path.read_text(encoding="utf-8", errors="ignore")
-        return re.findall(r"TEST_RUN\((test_[A-Za-z0-9_]+)\)", text)
+        return re.findall(PROFILE["source_layout"]["test_run_pattern"], text)
+
+    def _collect_public_apis(self, header: Path) -> list[str]:
+        if not header.exists():
+            return []
+        text = header.read_text(encoding="utf-8", errors="ignore")
+        return sorted(set(re.findall(PROFILE["source_layout"]["public_api_pattern"], text)))
+
+    def _collect_internal_anchors(self, flashdb: Path) -> dict[str, dict[str, Any]]:
+        anchors: dict[str, dict[str, Any]] = {}
+        for filename, expected in PROFILE["internal_parity_anchors"].items():
+            path = flashdb / "src" / filename
+            text = path.read_text(encoding="utf-8", errors="ignore") if path.exists() else ""
+            anchors[filename] = {
+                "exists": path.exists(),
+                "expected": expected,
+                "present": [name for name in expected if name in text],
+                "missing_in_source": [name for name in expected if name not in text],
+            }
+        return anchors
 
 
 class SkeletonGenerationAgent(Agent):
     name = "SkeletonGenerationAgent"
 
-    def run(self, ctx: HarnessContext) -> None:
-        generate_cargo(ctx.out)
-        generate_lib(ctx.out)
-        generate_support_modules(ctx.out)
+    def run(self, ctx: ConversionContext) -> None:
+        generate_workspace_scaffold(ctx.out)
         write(
             ctx.artifact("02-skeleton.md"),
             f"""
             # Skeleton Generation
 
-            Generated Rust crate skeleton at `{ctx.out}`.
+            Prepared the Rust crate work area at `{ctx.out}`.
 
-            - `Cargo.toml`
-            - `src/lib.rs`
-            - planned modules: `config`, `types`, `error`, `status`, `blob`, `db`, `file`, `low_level`, `sector`, `cache`, `kvdb`, `tsdb`
+            Python creates only directories and Cargo manifest scaffolding.
+            The model must author `src/*.rs` and `tests/*.rs` from the profile,
+            specs, and source code.
             """,
         )
 
@@ -399,22 +176,20 @@ class SkeletonGenerationAgent(Agent):
 class ContextBuilderAgent(Agent):
     name = "ContextBuilderAgent"
 
-    def run(self, ctx: HarnessContext) -> None:
-        function_hints = self._collect_function_hints(ctx.flashdb)
+    def run(self, ctx: ConversionContext) -> None:
+        module_contexts: dict[str, Any] = {}
+        for name, spec in PROFILE["module_contexts"].items():
+            component_key = spec["component_key"]
+            module_contexts[name] = {
+                "source_hints": ctx.analysis.get("components", {}).get(component_key, []),
+                "target": spec["target"],
+                "required_mechanisms": spec["required_mechanisms"],
+            }
         ctx.context_index = {
-            "module_contexts": {
-                "kvdb": {
-                    "source_hints": ctx.analysis.get("components", {}).get("kvdb", []),
-                    "target": "src/kvdb.rs",
-                    "behaviours": ["set", "get", "update", "delete", "blob", "persistence"],
-                },
-                "tsdb": {
-                    "source_hints": ctx.analysis.get("components", {}).get("tsdb", []),
-                    "target": "src/tsdb.rs",
-                    "behaviours": ["append", "ordered iteration", "range query", "latest", "persistence"],
-                },
-            },
-            "function_hints": function_hints,
+            "module_contexts": module_contexts,
+            "function_hints": self._collect_function_hints(ctx.source),
+            "public_apis": ctx.analysis.get("public_apis", []),
+            "internal_parity_anchors": ctx.analysis.get("internal_parity_anchors", {}),
         }
         write(ctx.artifact("03-context.json"), json.dumps(ctx.context_index, indent=2, ensure_ascii=False))
 
@@ -422,100 +197,89 @@ class ContextBuilderAgent(Agent):
         hints: list[dict[str, str]] = []
         if not flashdb.exists():
             return hints
-        for path in sorted((flashdb / "src").rglob("*.[ch]")) + sorted((flashdb / "tests").rglob("*.[ch]")):
+        layout = PROFILE["source_layout"]
+        paths = []
+        for subdir in layout["source_dirs"] + layout["test_dirs"]:
+            paths.extend(sorted((flashdb / subdir).rglob("*.[ch]")))
+        for path in paths:
             try:
                 text = path.read_text(encoding="utf-8", errors="ignore")
             except OSError:
                 continue
-            for token in ["fdb_kv_", "fdb_blob_", "fdb_tsdb_", "fdb_tsl_"]:
+            for token in PROFILE["function_hint_tokens"]:
                 if token in text:
                     hints.append({"file": str(path.relative_to(flashdb)).replace("\\", "/"), "symbol_prefix": token})
         return hints
 
 
+class ParityMatrixAgent(Agent):
+    name = "ParityMatrixAgent"
+
+    def run(self, ctx: ConversionContext) -> None:
+        layout = PROFILE["source_layout"]
+        public_apis = self._public_apis(ctx.source / layout["public_api_header"])
+        parity = {
+            "public_apis": public_apis,
+            "expected_public_apis": PROFILE["c_api_parity_symbols"],
+            "expected_one_to_one_features": PROFILE["one_to_one_features"],
+            "source_to_rust_modules": PROFILE["source_to_rust_modules"],
+            "notes": [
+                "This matrix is supplied by the FlashDB profile, not by the generic harness.",
+                "Validation fails when generated Rust lacks public C API parity names or required storage-engine features.",
+                "Map/vector-only behaviour models are rejected even if high-level tests pass.",
+            ],
+        }
+        write(ctx.artifact("04-function-parity.json"), json.dumps(parity, indent=2, ensure_ascii=False))
+
+    def _public_apis(self, header: Path) -> list[str]:
+        if not header.exists():
+            return []
+        text = header.read_text(encoding="utf-8", errors="ignore")
+        return sorted(set(re.findall(PROFILE["source_layout"]["public_api_pattern"], text)))
+
+
 class TranslationAgent(Agent):
     name = "TranslationAgent"
 
-    def run(self, ctx: HarnessContext) -> None:
-        generate_kvdb(ctx.out)
-        generate_tsdb(ctx.out)
-        generate_tests(ctx.out)
+    def run(self, ctx: ConversionContext) -> None:
+        generate_model_brief(ctx.root, ctx.source, ctx.out, ctx.result, ctx.logs, PROFILE, ctx.analysis, ctx.context_index)
         write(
             ctx.artifact("04-translation.md"),
             f"""
-            # Translation
+            # Model-Guided Translation
 
-            Emitted safe Rust implementations and migrated tests.
+            The harness emitted model-facing generation guidance instead of
+            writing Rust implementation code from Python.
 
-            - `src/kvdb.rs`: key-value and blob behaviours.
-            - `src/tsdb.rs`: time-series append/query behaviours.
-            - `tests/kvdb_tests.rs`
-            - `tests/tsdb_tests.rs`
+            - Work item: `{ctx.out / "MODEL_TASK.md"}`
+            - Harness brief: `{ctx.result / "harness" / "04-model-generation-brief.md"}`
+            - Parity matrix: `{ctx.result / "harness" / "04-function-parity.json"}`
+
+            The model must author or repair the Rust crate under `{ctx.out}`.
+            Validation failures are kept as feedback for that generation loop.
             """,
         )
-
-
-class CompileAgent(Agent):
-    name = "CompileAgent"
-
-    def run(self, ctx: HarnessContext) -> None:
-        cargo_path = shutil.which(ctx.cargo)
-        if ctx.skip_cargo or cargo_path is None:
-            ctx.compile_result = {
-                "status": "skipped",
-                "reason": "cargo not found" if cargo_path is None else "disabled by --skip-cargo",
-            }
-        else:
-            ctx.compile_result = self._run_cargo(ctx, ["check"])
-        write(ctx.artifact("05-compile.json"), json.dumps(ctx.compile_result, indent=2, ensure_ascii=False))
-
-    def _run_cargo(self, ctx: HarnessContext, args: list[str]) -> dict[str, Any]:
-        proc = subprocess.run(
-            [ctx.cargo, *args],
-            cwd=ctx.out,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
-        return {
-            "status": "passed" if proc.returncode == 0 else "failed",
-            "command": [ctx.cargo, *args],
-            "returncode": proc.returncode,
-            "stdout": proc.stdout[-8000:],
-            "stderr": proc.stderr[-8000:],
-        }
-
-
-class RepairAgent(Agent):
-    name = "RepairAgent"
-
-    def run(self, ctx: HarnessContext) -> None:
-        status = ctx.compile_result.get("status")
-        repair = {
-            "status": "not_needed" if status in {"passed", "skipped"} else "manual_review_required",
-            "compile_status": status,
-            "notes": [],
-        }
-        if status == "failed":
-            repair["notes"].append("The deterministic generator produced code that cargo check rejected.")
-            repair["notes"].append("Inspect result/harness/05-compile.json for compiler diagnostics.")
-        write(ctx.artifact("06-repair.json"), json.dumps(repair, indent=2, ensure_ascii=False))
 
 
 class ValidationAgent(Agent):
     name = "ValidationAgent"
 
-    def run(self, ctx: HarnessContext) -> None:
+    def run(self, ctx: ConversionContext) -> None:
         cargo_path = shutil.which(ctx.cargo)
         self._ensure_report_placeholders(ctx)
         checks = {
-            "required_artifact_structure": self._check_required_artifact_structure(ctx),
+            "required_artifact_structure": check_artifact_structure(
+                ctx,
+                [("result_function_parity_json", ctx.result / "harness" / "04-function-parity.json")],
+            ),
             "constraint_docs": {item["path"]: item["exists"] for item in ctx.constraints},
-            "required_files": self._check_required_files(ctx.out),
-            "api_symbols": self._check_api_symbols(ctx.out),
+            "required_files": check_required_files(ctx.out, PROFILE["required_output_files"]),
+            "api_symbols": check_token_map(ctx.out, PROFILE["api_symbols"]),
+            "c_api_parity": self._check_c_api_parity(ctx.out),
+            "one_to_one_features": self._check_one_to_one_features(ctx.out),
+            "behaviour_model_rejection": self._check_behaviour_model_rejection(ctx.out),
             "translated_test_coverage": self._check_translated_test_coverage(ctx),
-            "unsafe_occurrences": self._count_unsafe(ctx.out),
+            "unsafe_occurrences": count_token_in_rust(ctx.out, "unsafe"),
         }
         if ctx.skip_cargo or cargo_path is None:
             cargo_test = {
@@ -523,7 +287,7 @@ class ValidationAgent(Agent):
                 "reason": "cargo not found" if cargo_path is None else "disabled by --skip-cargo",
             }
         else:
-            cargo_test = CompileAgent()._run_cargo(ctx, ["test"])
+            cargo_test = run_cargo(ctx, ["test"])
         ctx.validation_result = {
             "status": self._validation_status(checks, cargo_test),
             "failures": self._validation_failures(checks, cargo_test),
@@ -531,67 +295,70 @@ class ValidationAgent(Agent):
             "cargo_test": cargo_test,
         }
         write(ctx.artifact("07-validation.json"), json.dumps(ctx.validation_result, indent=2, ensure_ascii=False))
-        generate_report(ctx.root, ctx.flashdb, ctx.out, ctx.result, ctx.logs, ctx.validation_result, ctx.analysis)
+        generate_report(ctx.root, ctx.source, ctx.out, ctx.result, ctx.logs, ctx.validation_result, ctx.analysis)
         self._append_harness_report(ctx)
 
-    def _ensure_report_placeholders(self, ctx: HarnessContext) -> None:
+    def _ensure_report_placeholders(self, ctx: ConversionContext) -> None:
         if not (ctx.result / "output.md").exists():
             write(ctx.result / "output.md", "# FlashDB Rust Conversion Execution Report\n\nPending validation.\n")
         if not (ctx.result / "issues" / "00-summary.md").exists():
             write(ctx.result / "issues" / "00-summary.md", "# Conversion summary\n\nPending validation.\n")
 
-    def _count_unsafe(self, out: Path) -> int:
-        count = 0
-        for path in out.rglob("*.rs"):
-            try:
-                count += path.read_text(encoding="utf-8", errors="ignore").count("unsafe")
-            except OSError:
-                pass
-        return count
-
-    def _check_required_files(self, out: Path) -> dict[str, bool]:
-        return {relative: (out / relative).is_file() for relative in REQUIRED_OUTPUT_FILES}
-
-    def _check_required_artifact_structure(self, ctx: HarnessContext) -> dict[str, bool]:
-        return {
-            "result_dir": ctx.result.is_dir(),
-            "result_output_md": (ctx.result / "output.md").is_file(),
-            "result_issues_summary": (ctx.result / "issues" / "00-summary.md").is_file(),
-            "logs_dir": ctx.logs.is_dir(),
-            "logs_interaction_md": (ctx.logs / "interaction.md").is_file(),
-            "logs_trace_dir": (ctx.logs / "trace").is_dir(),
-            "logs_trace_events": (ctx.logs / "trace" / "events.jsonl").is_file(),
-        }
-
-    def _check_api_symbols(self, out: Path) -> dict[str, Any]:
+    def _check_c_api_parity(self, out: Path) -> dict[str, Any]:
         result: dict[str, Any] = {}
-        for relative, symbols in API_SYMBOLS.items():
-            path = out / relative
-            text = path.read_text(encoding="utf-8", errors="ignore") if path.exists() else ""
+        for group, symbols in PROFILE["c_api_parity_symbols"].items():
+            text = "\n".join(read_text(out / relative) for relative in PROFILE["c_api_parity_modules"][group])
             missing = [symbol for symbol in symbols if symbol not in text]
-            result[relative] = {
+            result[group] = {
                 "ok": not missing,
                 "missing": missing,
             }
         return result
 
-    def _check_translated_test_coverage(self, ctx: HarnessContext) -> dict[str, Any]:
+    def _check_one_to_one_features(self, out: Path) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for relative, features in PROFILE["one_to_one_features"].items():
+            text = read_text(out / "src" / relative)
+            feature_result = {}
+            for feature, tokens in features.items():
+                missing = [token for token in tokens if token not in text]
+                feature_result[feature] = {
+                    "ok": not missing,
+                    "missing": missing,
+                }
+            result[relative] = feature_result
+        return result
+
+    def _check_behaviour_model_rejection(self, out: Path) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for name, rule in PROFILE["behaviour_model_rejection"].items():
+            text = read_text(out / rule["file"])
+            bad_hits = [token for token in rule["bad"] if token in text]
+            missing_offsets = [token for token in rule["required_offsets"] if token not in text]
+            result[name] = {
+                "ok": not (bad_hits and missing_offsets),
+                "bad_hits": bad_hits,
+                "missing_required_offsets": missing_offsets,
+            }
+        return result
+
+    def _check_translated_test_coverage(self, ctx: ConversionContext) -> dict[str, Any]:
         source_runs = ctx.analysis.get("source_test_runs", {"kvdb": [], "tsdb": []})
         expected = {
-            "kvdb": self._expected_rust_test_names(source_runs.get("kvdb", []), "kvdb"),
-            "tsdb": self._expected_rust_test_names(source_runs.get("tsdb", []), "tsdb"),
+            suite: self._expected_rust_test_names(source_runs.get(suite, []), suite)
+            for suite in PROFILE["test_suites"]
         }
         actual = {
-            "kvdb": self._rust_test_names(ctx.out / "tests" / "kvdb_tests.rs"),
-            "tsdb": self._rust_test_names(ctx.out / "tests" / "tsdb_tests.rs"),
+            suite: self._rust_test_names(ctx.out / spec["target"])
+            for suite, spec in PROFILE["test_suites"].items()
         }
         return {
             "source_runs": source_runs,
             "expected_rust_tests": expected,
             "actual_rust_tests": actual,
             "missing": {
-                "kvdb": [name for name in expected["kvdb"] if name not in actual["kvdb"]],
-                "tsdb": [name for name in expected["tsdb"] if name not in actual["tsdb"]],
+                suite: [name for name in expected[suite] if name not in actual[suite]]
+                for suite in PROFILE["test_suites"]
             },
         }
 
@@ -600,7 +367,7 @@ class ValidationAgent(Agent):
         expected = []
         for name in source_runs:
             counts[name] = counts.get(name, 0) + 1
-            mapped = TSDB_DUPLICATE_TEST_NAME_MAP.get((name, counts[name])) if suite == "tsdb" else None
+            mapped = DUPLICATE_TEST_NAME_MAP.get((suite, name, counts[name]))
             expected.append(mapped or name)
         return expected
 
@@ -624,6 +391,19 @@ class ValidationAgent(Agent):
         for path, result in checks["api_symbols"].items():
             if not result["ok"]:
                 failures.append(f"missing API symbols in {path}: {', '.join(result['missing'])}")
+        for group, result in checks["c_api_parity"].items():
+            if not result["ok"]:
+                failures.append(f"missing C API parity symbols in {group}: {', '.join(result['missing'])}")
+        for module, features in checks["one_to_one_features"].items():
+            for feature, result in features.items():
+                if not result["ok"]:
+                    failures.append(f"missing one-to-one feature {module}:{feature}: {', '.join(result['missing'])}")
+        for rule, result in checks["behaviour_model_rejection"].items():
+            if not result["ok"]:
+                failures.append(
+                    f"behaviour-model shortcut detected ({rule}): bad tokens {', '.join(result['bad_hits'])}; "
+                    f"missing offsets {', '.join(result['missing_required_offsets'])}"
+                )
         coverage = checks["translated_test_coverage"]["missing"]
         for suite, missing in coverage.items():
             if missing:
@@ -639,50 +419,27 @@ class ValidationAgent(Agent):
     def _validation_status(self, checks: dict[str, Any], cargo_test: dict[str, Any]) -> str:
         return "failed" if self._validation_failures(checks, cargo_test) else "passed"
 
-    def _append_harness_report(self, ctx: HarnessContext) -> None:
+    def _append_harness_report(self, ctx: ConversionContext) -> None:
         report = ctx.result / "output.md"
         existing = report.read_text(encoding="utf-8") if report.exists() else ""
-        appendix = f"""
-
-        ## Agent harness execution
-
-        Harness artifacts are available under `{ctx.result / "harness"}`.
-
-        - OutputScaffoldAgent: required result and logs artifact structure.
-        - ConstraintLoadingAgent: weak-model API, Rust design, workflow, and prompt guardrails.
-        - ProjectAnalysisAgent: source inventory and component buckets.
-        - SkeletonGenerationAgent: Cargo crate layout.
-        - ContextBuilderAgent: minimum module/function context.
-        - TranslationAgent: Rust module and full FlashDB/tests test generation.
-        - CompileAgent: `cargo check` diagnostics when cargo is available.
-        - RepairAgent: compile-result triage.
-        - ValidationAgent: structural checks, translated test coverage checks, and `cargo test` when cargo is available.
-        """
+        appendix = PROFILE["harness_report_appendix"].format(harness_dir=ctx.result / "harness")
         write(report, existing + text_block(appendix))
 
 
-def text_block(value: str) -> str:
-    import textwrap
-
-    return textwrap.dedent(value).lstrip()
-
-
-def run_harness(ctx: HarnessContext) -> HarnessContext:
+def run_harness(ctx: ConversionContext) -> ConversionContext:
     agents: list[Agent] = [
         OutputScaffoldAgent(),
-        ConstraintLoadingAgent(),
+        ConstraintLoadingAgent(PROFILE["constraint_files"], PROFILE.get("constraint_summary_md")),
         ProjectAnalysisAgent(),
         SkeletonGenerationAgent(),
         ContextBuilderAgent(),
+        ParityMatrixAgent(),
         TranslationAgent(),
         CompileAgent(),
         RepairAgent(),
         ValidationAgent(),
     ]
-    for agent in agents:
-        agent(ctx)
-    write(ctx.artifact("00-events.json"), json.dumps(ctx.events, indent=2, ensure_ascii=False))
-    return ctx
+    return run_agents(ctx, agents)
 
 
 def main() -> int:
@@ -702,12 +459,13 @@ def main() -> int:
     logs = Path(args.logs)
     ctx = HarnessContext(
         root=root,
-        flashdb=Path(args.flashdb),
+        source=Path(args.flashdb),
         out=out if out.is_absolute() else root / out,
         result=result if result.is_absolute() else root / result,
         logs=logs if logs.is_absolute() else root / logs,
         cargo=args.cargo,
         skip_cargo=args.skip_cargo,
+        profile="flashdb",
     )
     run_harness(ctx)
     validation_status = ctx.validation_result.get("status", "unknown")

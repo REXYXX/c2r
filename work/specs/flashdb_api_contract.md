@@ -2,8 +2,13 @@
 
 This file is the fixed target contract for weaker-model C-to-Rust runs. The
 model must generate code that satisfies this contract before adding any extra
-surface area. The target is a structure-preserving Rust rewrite, not a compact
-behaviour-only crate.
+surface area. The target is a one-to-one Rust rewrite of FlashDB's storage
+engine, not a compact behaviour-only crate.
+
+This API contract is subordinate to
+`work/specs/flashdb_one_to_one_contract.md`. If any wording here appears to
+permit a shortcut that the one-to-one contract forbids, the one-to-one contract
+wins.
 
 ## Crate Layout
 
@@ -85,7 +90,11 @@ Required common structures:
 - `cache.rs`: `KvCacheNode`, `SectorCache`.
 - `db.rs`: `DbCore` with name, kind, storage, config, init state, and `control`.
 - `file.rs`: `FileStorage` with whole-file and offset read/write helpers.
-- `low_level.rs`: alignment/status/flash read-write helper functions.
+- `low_level.rs`: alignment/status/flash read-write helper functions,
+  including Rust equivalents of `fdb_calc_crc32`, `_fdb_set_status`,
+  `_fdb_get_status`, `_fdb_write_status`, `_fdb_read_status`,
+  `_fdb_continue_ff_addr`, `_fdb_flash_read`, `_fdb_flash_write`,
+  `_fdb_flash_erase`, and `_fdb_flash_write_align`.
 
 ## KVDB Contract
 
@@ -95,6 +104,9 @@ Required common structures:
   - `Io(std::io::Error)`
   - `Corrupt(String)`
   - `InvalidKey`
+  - `SavedFull`
+  - `InitFailed`
+  - `WriteErr`
 - `impl std::fmt::Display for KvError`
 - `impl std::error::Error for KvError`
 - `impl From<std::io::Error> for KvError`
@@ -133,14 +145,21 @@ impl KvDb {
 
 Required KVDB behaviours:
 
-- Empty keys must return `Err(KvError::InvalidKey)`.
-- `set` must create or update a key.
-- `get` must return bytes exactly as written.
-- `set_str` and `get_string` must round-trip valid UTF-8 strings.
-- `delete` must remove a key and report whether it existed.
-- `keys` must be deterministic; use `BTreeMap` unless there is a strong reason not to.
-- `open` must load previously synced data from disk.
-- `sync` must persist all current values and create parent directories when needed.
+- Empty keys and keys longer than `FDB_KV_NAME_MAX` must return `Err(KvError::InvalidKey)`.
+- `set`/`set_blob` must create/update KV nodes using FlashDB KV header, aligned
+  key/value storage, CRC32, status table, magic word, and sector allocation.
+- Updating an existing key must preserve the FlashDB two-phase flow: write the
+  new node, mark the old node `PRE_DELETE`, then mark it `DELETED`.
+- `get` and `get_blob` must read from node/blob metadata equivalent to
+  `fdb_kv_get_blob`.
+- `delete` must update FlashDB node status and sector dirty state; it must not
+  only remove an entry from a map.
+- Deterministic maps may be used only as auxiliary indexes/caches. They must not
+  replace sector/node storage, CRC, GC, recovery, and status transitions.
+- `open` must scan sector files and recover state from FlashDB-compatible
+  metadata, including dirty-GC recovery.
+- `sync` must persist sector-addressed FlashDB storage. A single custom
+  `flashdb.dat` is not sufficient.
 - Corrupt persisted data must return `KvError::Corrupt`.
 
 ## TSDB Contract
@@ -150,13 +169,18 @@ Required KVDB behaviours:
 - `pub enum TsError`
   - `Io(std::io::Error)`
   - `Corrupt(String)`
+  - `WriteErr`
+  - `InitFailed`
 - `impl std::fmt::Display for TsError`
 - `impl std::error::Error for TsError`
 - `impl From<std::io::Error> for TsError`
 - `pub enum TimeSeriesStatus`
+  - `Unused`
+  - `PreWrite`
   - `Write`
   - `UserStatus1`
   - `Deleted`
+  - `UserStatus2`
 - `pub struct TimeSeriesRecord`
   - `pub timestamp: i64`
   - `pub payload: Vec<u8>`
@@ -192,21 +216,29 @@ impl TimeSeriesDb {
 
 Required TSDB behaviours:
 
-- `append` must copy payload bytes into owned storage.
-- Records must be observed in ascending timestamp order.
+- `append` must copy payload bytes into FlashDB log storage and preserve TSL
+  index/log addresses.
+- `fdb_tsl_append` must use the configured `get_time` callback.
+- `fdb_tsl_append_with_ts` must reject timestamps less than or equal to
+  `last_time`.
+- Append must reject payloads larger than `max_len`.
+- Records must be observed through FlashDB sector/index iteration semantics.
 - `query(from, to)` must be inclusive at both ends and support reverse ranges.
 - `query_count` must count all records in the inclusive range.
 - `query_count_by_status` must count only records with the requested status.
 - `latest` must return the greatest timestamp record.
-- `set_status_range` must update matching records and return the number changed.
-- `clear` must remove all records.
-- `open` must load previously synced records from disk.
-- `sync` must persist all current records and create parent directories when needed.
+- `set_status_range` may exist as a convenience helper, but the core parity API
+  must update status through a `TslNode` equivalent to `fdb_tsl_set_status`.
+- `clear` must format/clean FlashDB TSDB sectors.
+- `open` must scan sector files and rebuild current sector, last time, oldest
+  address, and rollover state.
+- `sync` must persist sector-addressed FlashDB storage. A single custom
+  `flashdb.dat` is not sufficient.
 - Corrupt persisted data must return `TsError::Corrupt`.
 
 ## Persistence Format Constraints
 
-- Use a small binary format with a fixed magic header per database kind.
+- Use FlashDB-equivalent sector files and sector/node/log index layouts.
 - Use little-endian integer encoding.
 - Check all offsets with bounds checks before slicing.
 - Reject trailing bytes.
@@ -222,3 +254,5 @@ Required TSDB behaviours:
 - No hidden network or package download step.
 - No panics for normal error cases.
 - No two-file flattened implementation that hides FlashDB's original module boundaries.
+- No custom map/vector-only persistence model.
+- No single-file `flashdb.dat` as the only backend.

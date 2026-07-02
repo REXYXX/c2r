@@ -3,14 +3,22 @@
 This workflow is intended for weaker models. It narrows the task into small,
 checkable stages and forbids broad rewrites after validation begins.
 
+The workflow is implemented on top of the reusable harness primitives in
+`work/harness/generic_harness.py`. FlashDB-specific constraints are declared in
+`work/profiles/flashdb.md` and this agent/workflow document; do not add FlashDB
+parity rules to the generic harness layer.
+
 ## Model Operating Rules
 
 - The official opencode entrypoint is `python3 work/run_opencode_flashdb.py --flashdb /app/code/judge-assets/02_02_c_to_rust/code/FlashDB`.
 - Do not rely on manual hand-off text. The exit code and required artifact files are the delivery contract.
 - Follow `work/specs/flashdb_api_contract.md` first.
-- Follow `work/specs/rust_design_rules.md` second.
+- Follow `work/specs/flashdb_one_to_one_contract.md` second.
+- Follow `work/specs/rust_design_rules.md` third.
 - Treat original FlashDB C files as source context, not as files to modify.
 - Generate the Rust crate in `flashDB_rust/`.
+- Write Rust implementation files as model-authored code in `flashDB_rust/`;
+  do not hide prewritten Rust source inside Python scripts.
 - Preserve the original FlashDB module structure. Do not flatten the rewrite
   into only KVDB/TSDB files.
 - Write audit output under `result/harness/`.
@@ -55,6 +63,23 @@ Required output:
 Stop condition:
 
 - `result/harness/01-analysis.json` exists.
+- the analysis includes public API names from `flashdb.h`
+- the analysis includes internal parity anchors from `fdb_kvdb.c`,
+  `fdb_tsdb.c`, `fdb_utils.c`, and `fdb_file.c`
+
+## Stage 1.5: Parity Matrix
+
+Required output:
+
+- `result/harness/04-function-parity.json`
+- one mapping from every public `fdb_*` API to Rust API
+- one mapping from every required internal storage mechanism in
+  `flashdb_one_to_one_contract.md` to Rust modules/functions
+
+Stop condition:
+
+- no public API from `flashdb.h` is unmapped
+- no required one-to-one storage mechanism is unmapped
 
 ## Stage 2: Skeleton
 
@@ -90,16 +115,24 @@ Required output:
 - explicit translated structures for `fdb_kvdb`, `fdb_kv`, `fdb_kv_iterator`,
   `kvdb_sec_info`, and `kv_cache_node`
 
-Allowed implementation:
+Required implementation direction:
 
-- `BTreeMap<String, Vec<u8>>`
-- binary file persistence with a magic header
-- safe helper parser functions
+- author this Rust code directly in the Rust crate, not as Python string output
+- safe Rust sector/node structs and parsers
+- auxiliary indexes/caches for lookup speed
+- file-mode sector storage equivalent to FlashDB
+
+Forbidden implementation:
+
+- `BTreeMap<String, Vec<u8>>` as the primary database
+- custom single-file magic-header persistence
+- delete/update implemented only as map mutation
 
 Stop condition:
 
 - KVDB contract symbols are present
-- KVDB tests cover set/get/update/delete/blob/persistence
+- KVDB one-to-one feature checks pass: status tables, CRC, sector file layout,
+  KV node headers, dirty/GC state, recovery hooks, default KV, iterator metadata
 
 ## Stage 4: TSDB
 
@@ -110,17 +143,25 @@ Required output:
 - one Rust `#[test]` for every TSDB `TEST_RUN(...)` entry in `FlashDB/tests/fdb_tsdb_tc.c`; duplicate source invocations must use stable disambiguated names
 - explicit translated structures for `fdb_tsdb`, `fdb_tsl`, and `tsdb_sec_info`
 
-Allowed implementation:
+Required implementation direction:
 
-- `Vec<TimeSeriesRecord>`
-- sort records by timestamp after append/decode
-- inclusive query range
-- binary file persistence with a magic header
+- author this Rust code directly in the Rust crate, not as Python string output
+- safe Rust sector/log-index structs and parsers
+- auxiliary vectors for rebuilt iteration indexes
+- file-mode sector storage equivalent to FlashDB
+
+Forbidden implementation:
+
+- `Vec<TimeSeriesRecord>` as the primary database
+- sorting away FlashDB's monotonic timestamp rule
+- custom single-file magic-header persistence
 
 Stop condition:
 
 - TSDB contract symbols are present
-- TSDB tests cover append/order/query/latest/persistence
+- TSDB one-to-one feature checks pass: sector headers, log index/data addresses,
+  monotonic timestamp rejection, max_len rejection, rollover, callback
+  iteration, status update by node, max blob count, clean
 
 ## Stage 5: Compile
 
@@ -157,6 +198,9 @@ Required checks:
 - `logs/trace/` exists and contains engineering trace logs
 - required files exist
 - required public symbols exist
+- required C API parity names exist
+- one-to-one feature matrix passes
+- behaviour-model rejection checks pass
 - required structure-preserving modules exist
 - translated Rust tests cover all `FlashDB/tests` `TEST_RUN(...)` entries
 - `unsafe` occurrence count is zero
@@ -179,11 +223,12 @@ The report must state:
 
 - source path
 - Rust project path
-- implemented KVDB behaviours
-- implemented TSDB behaviours
+- implemented KVDB storage-engine parity features
+- implemented TSDB storage-engine parity features
 - full translated test coverage counts
 - compile/test result
-- known limitations
+- missing one-to-one features, if validation failed
+- one-to-one parity matrix status
 
 ## Failure Policy
 
@@ -193,4 +238,5 @@ If a stage fails:
 - keep generated files for inspection
 - do not hide failure by skipping validation unless Cargo is unavailable
 - do not claim completion unless structural checks and tests pass
+- do not claim completion if one-to-one feature checks fail, even if cargo test passes
 - in official opencode testing, return a non-zero exit code unless `result/harness/07-validation.json` has `status: "passed"`

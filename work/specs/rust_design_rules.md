@@ -8,7 +8,9 @@ auditable, and easy to repair.
 - Prefer a safe, idiomatic Rust rewrite, but preserve FlashDB's original logic
   structure and ownership boundaries. Do not compress the project into a tiny
   behaviour-only model.
-- Use owned data structures first: `String`, `Vec<u8>`, `BTreeMap`, `Vec<T>`.
+- Use owned Rust data (`String`, `Vec<u8>`) for memory safety, but do not let
+  high-level collections replace FlashDB's storage engine. `BTreeMap` or
+  `Vec<T>` may only be auxiliary indexes/caches over sector/node records.
 - Keep module boundaries fixed and close to the C project:
   - `config.rs`, `types.rs`, `status.rs`: constants, enums, config, control commands
   - `blob.rs`: blob buffer/saved metadata
@@ -70,11 +72,27 @@ auditable, and easy to repair.
   - `kvdb_sec_info` -> `KvSectorInfo`
   - `tsdb_sec_info` -> `TsSectorInfo`
   - `kv_cache_node` -> `KvCacheNode`
-- KVDB/TSDB modules may use high-level owned maps/vectors internally, but they
-  must still expose and maintain the translated structural state needed by the
-  original design.
+- KVDB/TSDB modules must make sector files, node/log headers, status tables,
+  CRC, GC/recovery, rollover, and control state the primary source of truth.
+  High-level maps/vectors are allowed only as rebuilt indexes for lookup speed.
 - Validation must fail if the output only contains `kvdb.rs` and `tsdb.rs` as
   implementation modules.
+
+## One-To-One Fidelity Rules
+
+- Read `work/specs/flashdb_one_to_one_contract.md` before writing code.
+- Preserve FlashDB file-mode storage: `db_name.fdb.<sector_index>` files,
+  sector-address offsets, erase-to-`0xFF`, and write alignment.
+- Preserve status-table transitions enough for tests and recovery checks to
+  observe `PRE_WRITE`, `WRITE`, `PRE_DELETE`, `DELETED`, dirty `GC`, and sector
+  `FULL`/`USING`/`EMPTY`.
+- Preserve `fdb_calc_crc32`; do not substitute another checksum.
+- Preserve KVDB allocation, update/delete, default KV, GC, recovery, iterator,
+  cache, and blob/object metadata.
+- Preserve TSDB append timestamp rules, `max_len`, rollover, log index/data
+  addresses, callback iteration, status update, max blob count, and clean.
+- Missing core FlashDB logic is a validation failure, not an acceptable
+  limitation to document away.
 
 ## Tests
 
@@ -90,7 +108,8 @@ The translated tests must include:
 - KVDB GC-like repeated update/delete/persistence scenarios
 - KVDB scale-up-like reopen and growth scenario
 - KVDB set-default/clear scenario
-- TSDB append with out-of-order timestamps
+- TSDB strict append rejects out-of-order/non-increasing timestamps through the
+  `fdb_tsl_*` API
 - TSDB inclusive range query
 - TSDB reverse range query
 - TSDB query count
