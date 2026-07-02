@@ -84,6 +84,7 @@ def generate_model_brief(
     rejection = profile.get("behaviour_model_rejection", {})
     c_api = profile.get("c_api_parity_symbols", {})
     source_to_rust = profile.get("source_to_rust_modules", {})
+    readme_coverage = profile.get("readme_test_coverage", {})
     source_runs = analysis.get("source_test_runs", {})
 
     def bullets(values: list[str]) -> str:
@@ -143,6 +144,16 @@ def generate_model_brief(
             "",
             "```json",
             json_block(source_runs),
+            "```",
+            "",
+            "## README_test And Benchmark Coverage",
+            "",
+            "Translate every unit test and benchmark item described by FlashDB's README_test.md.",
+            "The benchmark cases should validate operation semantics and sane measurement fields;",
+            "they should not depend on fixed wall-clock performance thresholds.",
+            "",
+            "```json",
+            json_block(readme_coverage),
             "```",
             "",
             "## Context Index",

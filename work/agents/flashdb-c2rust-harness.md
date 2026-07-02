@@ -90,6 +90,9 @@ or repairing Rust code.
    - Directs the model to migrate every `TEST_RUN(...)` entry from
      `FlashDB/tests/fdb_kvdb_tc.c` and `FlashDB/tests/fdb_tsdb_tc.c` to Rust
      `#[test]` cases.
+   - Directs the model to cover every unit-test and benchmark item from
+     `FlashDB/tests/README_test.md`, including KVDB/TSDB benchmark operations
+     from `FlashDB/tests/benchmark/bench_main.c`.
 
 8. `CompileAgent`
    - Runs `cargo check` when Cargo is available.
@@ -102,8 +105,8 @@ or repairing Rust code.
 10. `ValidationAgent`
    - Runs structural checks, fixed API symbol checks, C API parity checks,
      one-to-one feature checks, behaviour-model rejection checks, full
-     translated test coverage checks, unsafe counting, and `cargo test` when
-     Cargo is available.
+     translated test coverage checks, README/benchmark coverage checks, unsafe
+     counting, and `cargo test` when Cargo is available.
    - Keeps FlashDB-specific pass/fail criteria in the profile so future projects
      can reuse the same generic harness with different constraints.
    - Writes `result/harness/07-validation.json`.

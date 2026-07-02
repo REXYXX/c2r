@@ -50,6 +50,137 @@ Keep FlashDB API tokens, parity checks, weak-model rejection rules, and context 
       "target": "tests/tsdb_tests.rs"
     }
   },
+  "readme_test_coverage": {
+    "source": "tests/README_test.md",
+    "required_rust_tests": {
+      "tests/kvdb_tests.rs": [
+        "test_fdb_kvdb_init",
+        "test_fdb_kvdb_init_check",
+        "test_fdb_create_kv_blob",
+        "test_fdb_change_kv_blob",
+        "test_fdb_del_kv_blob",
+        "test_fdb_create_kv",
+        "test_fdb_change_kv",
+        "test_fdb_del_kv",
+        "test_fdb_gc",
+        "test_fdb_gc2",
+        "test_fdb_scale_up",
+        "test_fdb_kvdb_set_default",
+        "test_fdb_kvdb_deinit"
+      ],
+      "tests/tsdb_tests.rs": [
+        "test_fdb_tsdb_init_ex",
+        "test_fdb_tsl_clean_first_run",
+        "test_fdb_tsl_append",
+        "test_fdb_tsl_iter",
+        "test_fdb_tsl_iter_by_time",
+        "test_fdb_tsl_query_count",
+        "test_fdb_tsl_set_status",
+        "test_fdb_tsl_clean_second_run",
+        "test_fdb_tsl_iter_by_time_1",
+        "test_fdb_tsdb_deinit",
+        "test_fdb_github_issue_249"
+      ],
+      "tests/benchmark_tests.rs": [
+        "test_benchmark_kvdb_set_string",
+        "test_benchmark_kvdb_get_string",
+        "test_benchmark_kvdb_set_blob",
+        "test_benchmark_kvdb_get_blob",
+        "test_benchmark_kvdb_update_string",
+        "test_benchmark_kvdb_iterate_all",
+        "test_benchmark_kvdb_delete",
+        "test_benchmark_tsdb_append",
+        "test_benchmark_tsdb_iterate_all",
+        "test_benchmark_tsdb_iter_by_time",
+        "test_benchmark_tsdb_query_count"
+      ]
+    },
+    "benchmark": {
+      "source": "tests/benchmark/bench_main.c",
+      "config": "tests/benchmark/fdb_cfg.h",
+      "rust_target": "tests/benchmark_tests.rs",
+      "constants": {
+        "BENCH_SEC_SIZE": 4096,
+        "BENCH_KVDB_SECS": 128,
+        "BENCH_TSDB_SECS": 128,
+        "BENCH_KV_COUNT": 1000,
+        "BENCH_KV_BLOB_SIZE": 128,
+        "BENCH_TSL_COUNT": 2000,
+        "BENCH_TSL_BLOB_SIZE": 64,
+        "BENCH_ITER_COUNT": 3
+      },
+      "kvdb_operations": [
+        {
+          "operation": "set (string)",
+          "rust_test": "test_benchmark_kvdb_set_string",
+          "count": "BENCH_KV_COUNT"
+        },
+        {
+          "operation": "get (string)",
+          "rust_test": "test_benchmark_kvdb_get_string",
+          "count": "BENCH_KV_COUNT"
+        },
+        {
+          "operation": "set (blob)",
+          "rust_test": "test_benchmark_kvdb_set_blob",
+          "count": "BENCH_KV_COUNT",
+          "blob_size": "BENCH_KV_BLOB_SIZE"
+        },
+        {
+          "operation": "get (blob)",
+          "rust_test": "test_benchmark_kvdb_get_blob",
+          "count": "BENCH_KV_COUNT",
+          "blob_size": "BENCH_KV_BLOB_SIZE"
+        },
+        {
+          "operation": "update (string)",
+          "rust_test": "test_benchmark_kvdb_update_string",
+          "count": "BENCH_KV_COUNT"
+        },
+        {
+          "operation": "iterate all",
+          "rust_test": "test_benchmark_kvdb_iterate_all",
+          "expected_count": "BENCH_KV_COUNT * 2"
+        },
+        {
+          "operation": "delete",
+          "rust_test": "test_benchmark_kvdb_delete",
+          "count": "BENCH_KV_COUNT"
+        }
+      ],
+      "tsdb_operations": [
+        {
+          "operation": "append",
+          "rust_test": "test_benchmark_tsdb_append",
+          "count": "BENCH_TSL_COUNT",
+          "blob_size": "BENCH_TSL_BLOB_SIZE"
+        },
+        {
+          "operation": "iterate all",
+          "rust_test": "test_benchmark_tsdb_iterate_all",
+          "expected_count": "BENCH_TSL_COUNT"
+        },
+        {
+          "operation": "iter by time",
+          "rust_test": "test_benchmark_tsdb_iter_by_time",
+          "expected_count": "BENCH_TSL_COUNT"
+        },
+        {
+          "operation": "query count",
+          "rust_test": "test_benchmark_tsdb_query_count",
+          "expected_count": "BENCH_TSL_COUNT"
+        }
+      ],
+      "semantic_requirements": [
+        "Use file/POSIX-mode equivalent storage paths for benchmark databases.",
+        "Reset KVDB with default data before each KVDB benchmark iteration.",
+        "Clean TSDB and reset monotonic timestamp counter before each TSDB benchmark iteration.",
+        "Use monotonic timestamps equivalent to ++bench_cur_time.",
+        "Assert operation counts and resulting database contents, not just timing output.",
+        "Do not require wall-clock performance thresholds; validate benchmark semantics and measured result fields are sane."
+      ]
+    }
+  },
   "required_output_files": [
     "Cargo.toml",
     "src/lib.rs",
@@ -66,7 +197,8 @@ Keep FlashDB API tokens, parity checks, weak-model rejection rules, and context 
     "src/tsdb.rs",
     "src/types.rs",
     "tests/kvdb_tests.rs",
-    "tests/tsdb_tests.rs"
+    "tests/tsdb_tests.rs",
+    "tests/benchmark_tests.rs"
   ],
   "api_symbols": {
     "src/lib.rs": [

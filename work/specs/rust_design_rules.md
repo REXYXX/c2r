@@ -100,6 +100,12 @@ The generated tests must cover every `TEST_RUN(...)` entry in
 `FlashDB/tests/fdb_kvdb_tc.c` and `FlashDB/tests/fdb_tsdb_tc.c`. Duplicate source
 invocations must be preserved with stable Rust names.
 
+The generated tests must also cover every unit-test and benchmark item listed in
+`FlashDB/tests/README_test.md`, including the benchmark suite under
+`FlashDB/tests/benchmark/bench_main.c`. Benchmark tests should validate operation
+semantics, operation counts, cleanup, and sane timing/result fields; they must
+not rely on fixed wall-clock performance thresholds.
+
 The translated tests must include:
 
 - KVDB string set/get/update/delete
@@ -114,6 +120,8 @@ The translated tests must include:
 - TSDB reverse range query
 - TSDB query count
 - TSDB status update/count
+- Benchmark KVDB set/get string, set/get blob, update string, iterate all, and delete
+- Benchmark TSDB append, iterate all, iter by time, and query count
 - TSDB clean
 - TSDB latest record
 - TSDB persistence across `open` calls

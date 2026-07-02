@@ -41,6 +41,9 @@ Hard rules:
   when Cargo is available.
 - Translate and run all `TEST_RUN(...)` entries from `FlashDB/tests/fdb_kvdb_tc.c`
   and `FlashDB/tests/fdb_tsdb_tc.c`; do not stop at representative tests.
+- Cover every unit-test and benchmark item documented in
+  `FlashDB/tests/README_test.md`, including the KVDB and TSDB benchmark
+  operations from `FlashDB/tests/benchmark/bench_main.c`.
 - Do not use `--skip-cargo` for official testing.
 - If validation fails, report the failure honestly with the command output.
 

@@ -279,6 +279,7 @@ class ValidationAgent(Agent):
             "one_to_one_features": self._check_one_to_one_features(ctx.out),
             "behaviour_model_rejection": self._check_behaviour_model_rejection(ctx.out),
             "translated_test_coverage": self._check_translated_test_coverage(ctx),
+            "readme_test_coverage": self._check_readme_test_coverage(ctx.out),
             "unsafe_occurrences": count_token_in_rust(ctx.out, "unsafe"),
         }
         if ctx.skip_cargo or cargo_path is None:
@@ -362,6 +363,21 @@ class ValidationAgent(Agent):
             },
         }
 
+    def _check_readme_test_coverage(self, out: Path) -> dict[str, Any]:
+        coverage = PROFILE.get("readme_test_coverage", {})
+        required = coverage.get("required_rust_tests", {})
+        result: dict[str, Any] = {
+            "source": coverage.get("source"),
+            "required_rust_tests": required,
+            "actual_rust_tests": {},
+            "missing": {},
+        }
+        for relative, expected in required.items():
+            actual = self._rust_test_names(out / relative)
+            result["actual_rust_tests"][relative] = actual
+            result["missing"][relative] = [name for name in expected if name not in actual]
+        return result
+
     def _expected_rust_test_names(self, source_runs: list[str], suite: str) -> list[str]:
         counts: dict[str, int] = {}
         expected = []
@@ -408,6 +424,10 @@ class ValidationAgent(Agent):
         for suite, missing in coverage.items():
             if missing:
                 failures.append(f"missing translated {suite.upper()} tests: {', '.join(missing)}")
+        readme_coverage = checks["readme_test_coverage"]["missing"]
+        for path, missing in readme_coverage.items():
+            if missing:
+                failures.append(f"missing README_test coverage in {path}: {', '.join(missing)}")
         if checks["unsafe_occurrences"] != 0:
             failures.append(f"unsafe occurrences must be 0, got {checks['unsafe_occurrences']}")
         if cargo_test.get("status") == "failed":

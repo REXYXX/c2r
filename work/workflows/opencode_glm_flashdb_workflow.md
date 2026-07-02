@@ -203,6 +203,9 @@ Required checks:
 - behaviour-model rejection checks pass
 - required structure-preserving modules exist
 - translated Rust tests cover all `FlashDB/tests` `TEST_RUN(...)` entries
+- translated Rust tests cover every unit-test and benchmark item in
+  `FlashDB/tests/README_test.md`, including `tests/benchmark/bench_main.c`
+  benchmark operations
 - `unsafe` occurrence count is zero
 - `cargo test` passes when Cargo is available
 
