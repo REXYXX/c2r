@@ -9,18 +9,22 @@ The framework is split into a reusable Python layer and a FlashDB profile:
 - `work/harness/generic_harness.py` owns orchestration, context, trace logging,
   constraint loading, command execution, cargo result capture, and generic
   file/token checks.
+- `work/harness/profile_harness.py` owns profile-driven source analysis,
+  context indexing, parity matrix generation, model task emission, and
+  validation gates.
+- `work/harness/model_artifacts.py` owns project-neutral scaffold, model brief,
+  and report generation. It must not embed prewritten Rust implementations.
+- `work/run_conversion.py` is the generic CLI: pass `--profile` and `--source`
+  to run any markdown-profile conversion.
 - `work/profiles/flashdb.md` owns FlashDB-specific API tokens, one-to-one
   storage-engine parity tokens, weak-model rejection rules, source context
   hints, and required output files through a `json harness-profile` block.
-- `work/harness/flashdb_harness.py` wires the FlashDB profile into the generic
-  agents and implements only FlashDB-specific source analysis, generation, and
-  validation glue. It should not hard-code FlashDB parity token matrices.
-- `work/convert_flashdb.py` prepares the model work area, `MODEL_TASK.md`, and
-  reports. It must not embed prewritten Rust implementations.
+- `work/harness/flashdb_harness.py` is a compatibility wrapper that loads the
+  FlashDB profile and calls the generic profile harness.
 
-For opencode + GLM5.1 or other weaker models, the harness is intentionally
-constraint-first: load the API contract and workflow documents before generating
-or repairing Rust code.
+For execution models, especially weaker models, the harness is intentionally
+constraint-first: load the project profile, Rust design rules, and workflow
+before generating or repairing Rust code.
 
 ## Input
 
@@ -43,11 +47,10 @@ or repairing Rust code.
 
 ## Constraint Documents
 
-- `work/specs/flashdb_api_contract.md`: fixed public Rust API and behaviours.
-- `work/specs/flashdb_one_to_one_contract.md`: strict storage-engine parity contract.
-- `work/specs/rust_design_rules.md`: safe Rust implementation rules.
-- `work/workflows/opencode_glm_flashdb_workflow.md`: stage-by-stage weak-model workflow.
-- `work/prompts/opencode_glm_system_prompt.md`: recommended opencode system prompt.
+- `work/profiles/flashdb.md`: FlashDB API tokens, parity matrix, required files,
+  rejection rules, source mappings, and test coverage matrix.
+- `work/specs/rust_design_rules.md`: project-neutral Rust implementation rules.
+- `work/workflows/flashdb_conversion_workflow.md`: stage-by-stage model workflow.
 
 ## Workflow
 
@@ -65,16 +68,16 @@ or repairing Rust code.
 
 3. `ProjectAnalysisAgent`
    - Inventories C source, headers, and tests.
-   - Groups files into KVDB, TSDB, and port/platform buckets.
+   - Groups files into profile-declared component buckets.
    - Writes `result/harness/01-analysis.json`.
 
 4. `SkeletonGenerationAgent`
    - Creates a compilable Rust crate layout.
-   - Writes `Cargo.toml` and `src/lib.rs`.
+   - Writes `Cargo.toml`; `src/*.rs` and `tests/*.rs` must be model-authored.
 
 5. `ContextBuilderAgent`
    - Builds a minimum dependency/context index for target modules.
-   - Records symbol-prefix hints such as `fdb_kv_`, `fdb_blob_`, `fdb_tsdb_`, and `fdb_tsl_`.
+   - Records symbol-prefix hints declared by the profile.
    - Writes `result/harness/03-context.json`.
 
 6. `ParityMatrixAgent`
@@ -114,9 +117,14 @@ or repairing Rust code.
 ## Command
 
 ```bash
-python3 work/run_opencode_flashdb.py \
-  --flashdb /app/code/judge-assets/02_02_c_to_rust/code/FlashDB
+python3 work/run_conversion.py \
+  --profile work/profiles/flashdb.md \
+  --source /app/code/judge-assets/02_02_c_to_rust/code/FlashDB \
+  --out flashDB_rust \
+  --result result \
+  --logs logs \
+  --strict
 ```
 
-This command is non-interactive and strict. It returns `0` only when
+This generic command is non-interactive and strict. It returns `0` only when
 `result/harness/07-validation.json` reports `status: "passed"`.

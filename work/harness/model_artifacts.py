@@ -1,24 +1,19 @@
 #!/usr/bin/env python3
-"""Prepare model-facing artifacts for the FlashDB C-to-Rust migration.
+"""Model-facing artifact helpers for profile-driven C-to-Rust conversions.
 
-This module intentionally does not contain Rust implementation strings.  The
-conversion harness should guide the coding model with source inventory,
-contracts, and validation gates; the model is responsible for writing the Rust
-crate under `flashDB_rust/`.
+This module prepares directories, Cargo metadata, model briefs, and reports. It
+must stay project-neutral: domain rules, expected Rust files, API tokens, and
+test requirements are read from the markdown profile.
 """
 
 from __future__ import annotations
 
-import argparse
 import datetime as _dt
 import json
 import os
 from pathlib import Path
 import textwrap
 from typing import Any
-
-
-DEFAULT_FLASHDB = Path("/app/code/judge-assets/02_02_c_to_rust/code/FlashDB")
 
 
 def write(path: Path, data: str) -> None:
@@ -38,26 +33,59 @@ def list_relative(root: Path, subdir: str) -> list[str]:
     return sorted(str(p.relative_to(root)).replace(os.sep, "/") for p in base.rglob("*") if p.is_file())
 
 
-def generate_workspace_scaffold(out: Path, crate_name: str = "flashdb_rust") -> None:
-    """Create only the model's work area and Cargo manifest.
+def profile_name(profile: dict[str, Any]) -> str:
+    return str(profile.get("profile") or profile.get("name") or "project")
 
-    Existing Rust files are left untouched.  The manifest is useful context for
-    the model, but `src/*.rs` and tests must be authored by the model.
+
+def display_name(profile: dict[str, Any]) -> str:
+    return str(profile.get("display_name") or profile_name(profile))
+
+
+def artifact_config(profile: dict[str, Any]) -> dict[str, Any]:
+    value = profile.get("artifact", {})
+    return value if isinstance(value, dict) else {}
+
+
+def crate_name(profile: dict[str, Any], override: str | None = None) -> str:
+    if override:
+        return override
+    artifact = artifact_config(profile)
+    return str(artifact.get("crate_name") or f"{profile_name(profile)}_rust")
+
+
+def output_dir_name(profile: dict[str, Any]) -> str:
+    artifact = artifact_config(profile)
+    return str(artifact.get("output_dir") or f"{profile_name(profile)}_rust")
+
+
+def source_label(profile: dict[str, Any]) -> str:
+    artifact = artifact_config(profile)
+    return str(artifact.get("source_label") or "C source")
+
+
+def generate_workspace_scaffold(out: Path, profile: dict[str, Any] | None = None, crate: str | None = None) -> None:
+    """Create only the model work area and Cargo manifest.
+
+    Existing Rust files are left untouched. The manifest gives the model a valid
+    crate shell; all Rust implementation and test files must be authored by the
+    coding model from source context and profile constraints.
     """
+    profile = profile or {}
+    resolved_crate = crate_name(profile, crate)
     (out / "src").mkdir(parents=True, exist_ok=True)
     (out / "tests").mkdir(parents=True, exist_ok=True)
     write_if_missing(
         out / "Cargo.toml",
         f"""
         [package]
-        name = "{crate_name}"
+        name = "{resolved_crate}"
         version = "0.1.0"
         edition = "2021"
-        description = "Model-authored safe Rust rewrite of FlashDB"
+        description = "Model-authored safe Rust rewrite of {display_name(profile)}"
         license = "MIT"
 
         [lib]
-        name = "{crate_name}"
+        name = "{resolved_crate}"
         path = "src/lib.rs"
 
         [dependencies]
@@ -67,7 +95,7 @@ def generate_workspace_scaffold(out: Path, crate_name: str = "flashdb_rust") -> 
 
 def generate_model_brief(
     root: Path,
-    flashdb: Path,
+    source: Path,
     out: Path,
     result: Path,
     logs: Path,
@@ -76,6 +104,7 @@ def generate_model_brief(
     context_index: dict[str, Any] | None = None,
 ) -> None:
     """Emit markdown instructions that guide the model to write Rust code."""
+    del root
     analysis = analysis or {}
     context_index = context_index or {}
     required_files = profile.get("required_output_files", [])
@@ -86,6 +115,9 @@ def generate_model_brief(
     source_to_rust = profile.get("source_to_rust_modules", {})
     readme_coverage = profile.get("readme_test_coverage", {})
     source_runs = analysis.get("source_test_runs", {})
+    project = display_name(profile)
+    artifact = artifact_config(profile)
+    task_title = artifact.get("task_title") or f"{project} Rust Model Task"
 
     def bullets(values: list[str]) -> str:
         return "\n".join(f"- `{value}`" for value in values) if values else "- none"
@@ -95,15 +127,15 @@ def generate_model_brief(
 
     brief = "\n".join(
         [
-            "# FlashDB Rust Model Task",
+            f"# {task_title}",
             "",
             "The Python harness does not generate the Rust implementation. Write the",
-            f"Rust crate under `{out}` by reading the FlashDB C source and the constraint",
+            f"Rust crate under `{out}` by reading the source project and the constraint",
             "documents listed here.",
             "",
             "## Source And Output",
             "",
-            f"- FlashDB C source: `{flashdb}`",
+            f"- {source_label(profile)}: `{source}`",
             f"- Rust crate output: `{out}`",
             f"- Result artifacts: `{result}`",
             f"- Logs: `{logs}`",
@@ -128,7 +160,7 @@ def generate_model_brief(
             json_block(c_api),
             "```",
             "",
-            "## One-To-One Storage-Engine Checks",
+            "## One-To-One Logic Checks",
             "",
             "```json",
             json_block(one_to_one),
@@ -146,11 +178,11 @@ def generate_model_brief(
             json_block(source_runs),
             "```",
             "",
-            "## README_test And Benchmark Coverage",
+            "## README And Benchmark Coverage",
             "",
-            "Translate every unit test and benchmark item described by FlashDB's README_test.md.",
-            "The benchmark cases should validate operation semantics and sane measurement fields;",
-            "they should not depend on fixed wall-clock performance thresholds.",
+            "Translate every unit test and benchmark item declared by the profile.",
+            "Benchmark cases should validate operation semantics and sane measurement",
+            "fields; they should not depend on fixed wall-clock performance thresholds.",
             "",
             "```json",
             json_block(readme_coverage),
@@ -165,9 +197,9 @@ def generate_model_brief(
             "## Work Rules",
             "",
             f"- Author Rust source files directly in `{out}`; do not add Rust source to Python.",
-            "- Preserve FlashDB module boundaries from the source-to-Rust mapping.",
-            "- Use safe Rust only and avoid C FFI.",
-            "- Translate every source `TEST_RUN(...)` entry into Rust tests.",
+            "- Preserve module boundaries from the source-to-Rust mapping.",
+            "- Use safe Rust only and avoid C FFI unless a profile explicitly permits it.",
+            "- Translate every source test entry required by the profile into Rust tests.",
             "- Run `cargo check` and `cargo test` once the crate is authored.",
             "- Treat validation failures as generation guidance, not as reasons to weaken the profile checks.",
             "",
@@ -179,21 +211,25 @@ def generate_model_brief(
 
 def generate_report(
     root: Path,
-    flashdb: Path,
+    source: Path,
     out: Path,
     result: Path | None = None,
     logs: Path | None = None,
     validation: dict[str, Any] | None = None,
     analysis: dict[str, Any] | None = None,
+    profile: dict[str, Any] | None = None,
 ) -> None:
+    profile = profile or {}
     result = result or root / "result"
     logs = logs or root / "logs"
     validation = validation or {}
     analysis = analysis or {}
     now = _dt.datetime.now(_dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-    status = "found" if flashdb.exists() else "not found in this environment"
+    status = "found" if source.exists() else "not found in this environment"
     failures = validation.get("failures", [])
     cargo_test = validation.get("cargo_test", {"status": "not_run"})
+    artifact = artifact_config(profile)
+    report_title = artifact.get("report_title") or f"{display_name(profile)} Rust Conversion Harness Report"
 
     def bullet_list(values: list[str]) -> str:
         return "\n".join(f"- `{value}`" for value in values) if values else "- none"
@@ -201,13 +237,13 @@ def generate_report(
     write(
         result / "output.md",
         f"""
-        # FlashDB Rust Conversion Harness Report
+        # {report_title}
 
         Generated at: {now}
 
         ## Inputs
 
-        - FlashDB source: `{flashdb}` ({status})
+        - {source_label(profile)}: `{source}` ({status})
         - Rust output project: `{out}`
         - Result directory: `{result}`
         - Logs directory: `{logs}`
@@ -215,9 +251,8 @@ def generate_report(
         ## Harness Role
 
         Python prepares the work area, source inventory, model task brief, and
-        validation artifacts.  It does not contain or emit a hard-coded FlashDB
-        Rust implementation.  The model must author the Rust source files under
-        `{out}`.
+        validation artifacts. It does not contain or emit a hard-coded Rust
+        implementation. The model must author Rust source files under `{out}`.
 
         ## Source Inventory
 
@@ -256,36 +291,7 @@ def generate_report(
         ## Required next step
 
         The model must write or repair the Rust crate in `{out}` using the
-        profile and model task brief.  Python must not be used as a container
+        profile and model task brief. Python must not be used as a container
         for prewritten Rust implementation strings.
         """,
     )
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Prepare FlashDB model-generation artifacts.")
-    parser.add_argument("--flashdb", default=str(DEFAULT_FLASHDB), help="Path to platform FlashDB source tree")
-    parser.add_argument("--out", default="flashDB_rust", help="Output Rust project directory")
-    parser.add_argument("--result", default="result", help="Result/report directory")
-    parser.add_argument("--logs", default="logs", help="Logs directory")
-    args = parser.parse_args()
-
-    root = Path.cwd()
-    flashdb = Path(args.flashdb)
-    out = Path(args.out)
-    result = Path(args.result)
-    logs = Path(args.logs)
-    out = out if out.is_absolute() else root / out
-    result = result if result.is_absolute() else root / result
-    logs = logs if logs.is_absolute() else root / logs
-
-    generate_workspace_scaffold(out)
-    generate_report(root, flashdb, out, result, logs)
-    print(f"prepared Rust work area: {out}")
-    print(f"source FlashDB path: {flashdb} ({'found' if flashdb.exists() else 'not found'})")
-    print(f"result report: {result / 'output.md'}")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

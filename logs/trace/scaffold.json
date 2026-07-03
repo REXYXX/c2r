@@ -1,7 +1,0 @@
-{
-  "result_dir": "D:\\c2rust\\c2rust\\c2rust\\result",
-  "required_result_output": "D:\\c2rust\\c2rust\\c2rust\\result\\output.md",
-  "logs_dir": "D:\\c2rust\\c2rust\\c2rust\\logs",
-  "required_interaction_log": "D:\\c2rust\\c2rust\\c2rust\\logs\\interaction.md",
-  "trace_dir": "D:\\c2rust\\c2rust\\c2rust\\logs\\trace"
-}

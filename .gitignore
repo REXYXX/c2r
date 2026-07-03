@@ -1,6 +1,10 @@
 __pycache__/
 *.py[cod]
 
+result/
+logs/
+flashDB_rust/
+
 target/
 tmp_*/
 

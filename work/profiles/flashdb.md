@@ -6,14 +6,20 @@ Keep FlashDB API tokens, parity checks, weak-model rejection rules, and context 
 ```json harness-profile
 {
   "profile": "flashdb",
+  "display_name": "FlashDB",
+  "default_source": "/app/code/judge-assets/02_02_c_to_rust/code/FlashDB",
+  "artifact": {
+    "crate_name": "flashdb_rust",
+    "output_dir": "flashDB_rust",
+    "source_label": "FlashDB C source",
+    "task_title": "FlashDB Rust Model Task",
+    "report_title": "FlashDB Rust Conversion Harness Report"
+  },
   "constraint_files": [
-    "work/specs/flashdb_api_contract.md",
-    "work/specs/flashdb_one_to_one_contract.md",
     "work/specs/rust_design_rules.md",
-    "work/workflows/opencode_glm_flashdb_workflow.md",
-    "work/prompts/opencode_glm_system_prompt.md"
+    "work/workflows/flashdb_conversion_workflow.md"
   ],
-  "constraint_summary_md": "# Constraint Loading\n\nThe harness loaded the fixed FlashDB weak-model guardrails before source analysis.\n\nRequired documents:\n\n- `work/specs/flashdb_api_contract.md`\n- `work/specs/flashdb_one_to_one_contract.md`\n- `work/specs/rust_design_rules.md`\n- `work/workflows/opencode_glm_flashdb_workflow.md`\n- `work/prompts/opencode_glm_system_prompt.md`\n\nThese files constrain public API shape, one-to-one storage-engine parity, Rust\ndesign choices, workflow stages, validation, and the opencode+GLM prompt.",
+  "constraint_summary_md": "# Constraint Loading\n\nThe harness loaded the fixed FlashDB model guardrails before source analysis.\n\nRequired documents:\n\n- `work/specs/rust_design_rules.md`\n- `work/workflows/flashdb_conversion_workflow.md`\n\nFlashDB API shape, one-to-one storage-engine parity, source mappings, required files, weak-model rejection rules, and test coverage matrices are declared in `work/profiles/flashdb.md`.",
   "source_layout": {
     "source_dirs": [
       "src"
@@ -27,14 +33,21 @@ Keep FlashDB API tokens, parity checks, weak-model rejection rules, and context 
     ],
     "public_api_header": "inc/flashdb.h",
     "public_api_pattern": "\\b(fdb_[A-Za-z0-9_]+)\\s*\\(",
-    "test_run_pattern": "TEST_RUN\\((test_[A-Za-z0-9_]+)\\)"
+    "test_run_pattern": "TEST_RUN\\((test_[A-Za-z0-9_]+)\\)",
+    "anchor_search_dirs": [
+      "src"
+    ],
+    "function_hint_globs": [
+      "*.c",
+      "*.h"
+    ]
   },
   "component_filters": {
     "kvdb": [
       "kv"
     ],
     "tsdb": [
-      "ts"
+      "tsdb"
     ],
     "port": [
       "port"
@@ -699,6 +712,6 @@ Keep FlashDB API tokens, parity checks, weak-model rejection rules, and context 
       "target": "test_fdb_tsl_clean_second_run"
     }
   ],
-  "harness_report_appendix": "## Agent harness execution\n\nHarness artifacts are available under `{harness_dir}`.\n\n- OutputScaffoldAgent: required result and logs artifact structure.\n- ConstraintLoadingAgent: FlashDB API, Rust design, workflow, and prompt guardrails.\n- ProjectAnalysisAgent: source inventory and component buckets.\n- SkeletonGenerationAgent: Cargo crate layout.\n- ContextBuilderAgent: minimum module/function context.\n- ParityMatrixAgent: public API and storage-engine parity matrix.\n- TranslationAgent: Rust module and full FlashDB/tests test generation.\n- CompileAgent: `cargo check` diagnostics when cargo is available.\n- RepairAgent: compile-result triage.\n- ValidationAgent: structural checks, C API parity checks, one-to-one feature checks, translated test coverage checks, and `cargo test` when cargo is available."
+  "harness_report_appendix": "## Agent harness execution\n\nHarness artifacts are available under `{harness_dir}`.\n\n- OutputScaffoldAgent: required result and logs artifact structure.\n- ConstraintLoadingAgent: FlashDB API, Rust design, workflow, and weak-model guardrails.\n- ProjectAnalysisAgent: source inventory and component buckets.\n- SkeletonGenerationAgent: Cargo crate layout.\n- ContextBuilderAgent: minimum module/function context.\n- ParityMatrixAgent: public API and storage-engine parity matrix.\n- TranslationAgent: Rust module and full FlashDB/tests test generation.\n- CompileAgent: `cargo check` diagnostics when cargo is available.\n- RepairAgent: compile-result triage.\n- ValidationAgent: structural checks, C API parity checks, one-to-one feature checks, translated test coverage checks, and `cargo test` when cargo is available."
 }
 ```
