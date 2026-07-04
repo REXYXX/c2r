@@ -1,8 +1,14 @@
 __pycache__/
 *.py[cod]
 
-result/
-logs/
+result/*
+!result/
+!result/output.md
+logs/*
+!logs/
+!logs/interaction.md
+!logs/trace/
+!logs/trace/.gitkeep
 flashDB_rust/
 
 target/

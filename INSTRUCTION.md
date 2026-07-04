@@ -12,18 +12,7 @@
 - `logs/trace/profile-harness-path.json`：profile harness 内部关键节点执行路径。
 - `logs/trace/profile-harness-path.md`：便于人工查看的 profile harness 内部路径表。
 
-本地开发示例：
-
-```bash
-python3 work/run_conversion.py \
-  --source /mnt/d/c2rust/c2rust/FlashDB \
-  --out flashDB_rust \
-  --result result \
-  --logs logs
-```
-
-评测环境示例：
-
+开发示例：
 ```bash
 python3 work/run_conversion.py \
   --source /app/code/judge-assets/02_02_c_to_rust/code/FlashDB \
@@ -36,17 +25,7 @@ python3 work/run_conversion.py \
 `MODEL_TASK.md`，不会运行 `CompileStage`、`RepairStage`、`ValidationStage`。
 实现或修复完成后运行严格入口：
 
-本地开发示例：
-```bash
-python3 work/run_conversion.py \
-  --source /mnt/d/c2rust/c2rust/FlashDB \
-  --out flashDB_rust \
-  --result result \
-  --logs logs \
-  --strict
-```
-评测环境示例：
-
+开发示例：
 ```bash
 python3 work/run_conversion.py \
   --source /app/code/judge-assets/02_02_c_to_rust/code/FlashDB \

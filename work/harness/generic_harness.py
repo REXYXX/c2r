@@ -124,6 +124,8 @@ class OutputScaffoldStage(HarnessStage):
         ctx.result.mkdir(parents=True, exist_ok=True)
         (ctx.result / "issues").mkdir(parents=True, exist_ok=True)
         (ctx.result / "harness").mkdir(parents=True, exist_ok=True)
+        if not (ctx.result / "output.md").exists():
+            write(ctx.result / "output.md", "# 转换执行报告\n\n等待生成。\n")
         ctx.logs.mkdir(parents=True, exist_ok=True)
         (ctx.logs / "trace").mkdir(parents=True, exist_ok=True)
         interaction = ctx.logs / "interaction.md"
