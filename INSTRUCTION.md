@@ -7,12 +7,10 @@
 `04-function-parity.json`，再按这些产物编写 Rust。只有 Rust 代码写完后，
 才运行验证阶段生成 `07-validation.json`。
 
-执行顺序必须通过 `logs/trace/` 中的执行路径产物审计：
+执行顺序必须通过 `logs/trace/` 中的 profile harness 路径产物审计：
 
-- `logs/trace/execution-plan.json`：harness 设计的预期 HarnessStage 顺序。
-- `logs/trace/execution-path.json`：实际执行顺序、每阶段状态、耗时和关键产物。
-- `logs/trace/execution-path.md`：便于人工快速查看的执行路径表。
-- `logs/trace/events.jsonl`：按时间追加的原子事件流。
+- `logs/trace/profile-harness-path.json`：profile harness 内部关键节点执行路径。
+- `logs/trace/profile-harness-path.md`：便于人工查看的 profile harness 内部路径表。
 
 本地开发示例：
 
@@ -126,12 +124,12 @@ Harness 分为 bootstrap 和 validation 两段，每个阶段都会向 `result/h
 10. `ValidationStage`：检查结构、API parity、测试覆盖、benchmark 覆盖、`unsafe`
     使用，并在 Cargo 可用时执行 `cargo test`。
 
-每个阶段完成后，harness 都会将阶段记录追加到 `logs/trace/execution-path.json`，
-包括 `step`、`stage`、`expected_stage`、`order_ok`、`status`、`duration_ms`
-和该阶段关键输出文件是否存在。bootstrap 阶段的 `expected_sequence` 应只包含
-前 7 个 HarnessStage；严格验证阶段的 `expected_sequence` 应包含 10 个 HarnessStage。
-判断模型是否按序执行时，以 `order_ok` 和 `actual_sequence` 是否匹配
-`expected_sequence` 为准。
+`profile_harness.py` 会把计划阶段、每个 HarnessStage 的开始/完成、源码扫描、
+动态 profile 推导、上下文索引、parity 矩阵、模型任务书和 profile 验证写入
+`logs/trace/profile-harness-path.json` 与 `logs/trace/profile-harness-path.md`。
+bootstrap 阶段的 `planned_stages` 应只包含前 7 个 HarnessStage；严格验证阶段
+的 `planned_stages` 应包含 10 个 HarnessStage。判断模型是否按序执行时，以
+`stage_start` / `stage_complete` 的 `step` 和 `stage_name` 顺序为准。
 
 代码分层：
 
@@ -177,10 +175,8 @@ flashDB_rust/
 logs/
 logs/interaction.md
 logs/trace/
-logs/trace/events.jsonl
-logs/trace/execution-plan.json
-logs/trace/execution-path.json
-logs/trace/execution-path.md
+logs/trace/profile-harness-path.json
+logs/trace/profile-harness-path.md
 result/output.md
 result/issues/00-summary.md
 result/harness/

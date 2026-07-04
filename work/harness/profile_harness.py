@@ -11,6 +11,7 @@ import copy
 import json
 import re
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -26,7 +27,6 @@ from generic_harness import (
     check_token_map,
     count_token_in_rust,
     read_text,
-    run_stages,
     run_cargo,
     text_block,
     write,
@@ -86,6 +86,76 @@ def _effective_profile(ctx: ConversionContext, profile: dict[str, Any]) -> dict[
     if isinstance(effective, dict):
         return effective
     return profile
+
+
+def _reset_profile_trace(ctx: ConversionContext) -> None:
+    setattr(ctx, "_profile_harness_trace", [])
+
+
+def _profile_trace_entries(ctx: ConversionContext) -> list[dict[str, Any]]:
+    trace = getattr(ctx, "_profile_harness_trace", None)
+    if isinstance(trace, list):
+        return trace
+    trace = []
+    setattr(ctx, "_profile_harness_trace", trace)
+    return trace
+
+
+def _profile_trace_summary(entry: dict[str, Any]) -> str:
+    details = {
+        key: value
+        for key, value in entry.items()
+        if key not in {"index", "time", "stage", "action"}
+    }
+    if not details:
+        return ""
+    summary = json.dumps(details, ensure_ascii=False)
+    return summary if len(summary) <= 240 else summary[:237] + "..."
+
+
+def _profile_trace_markdown(payload: dict[str, Any]) -> str:
+    rows = [
+        f"| {entry['index']} | `{entry['stage']}` | `{entry['action']}` | {_profile_trace_summary(entry)} |"
+        for entry in payload["path"]
+    ]
+    return "\n".join(
+        [
+            "# Profile Harness 执行路径",
+            "",
+            f"- profile: `{payload['profile']}`",
+            f"- source: `{payload['source']}`",
+            f"- out: `{payload['out']}`",
+            f"- result: `{payload['result']}`",
+            "",
+            "| Step | 节点 | 动作 | 关键数据 |",
+            "| --- | --- | --- | --- |",
+            *rows,
+            "",
+        ]
+    )
+
+
+def _record_profile_trace(ctx: ConversionContext, stage: str, action: str, **data: Any) -> None:
+    trace = _profile_trace_entries(ctx)
+    trace.append(
+        {
+            "index": len(trace) + 1,
+            "time": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+            "stage": stage,
+            "action": action,
+            **data,
+        }
+    )
+    payload = {
+        "profile": ctx.profile,
+        "source": str(ctx.source),
+        "out": str(ctx.out),
+        "result": str(ctx.result),
+        "logs": str(ctx.logs),
+        "path": trace,
+    }
+    write(ctx.trace_artifact("profile-harness-path.json"), json.dumps(payload, indent=2, ensure_ascii=False))
+    write(ctx.trace_artifact("profile-harness-path.md"), _profile_trace_markdown(payload))
 
 
 def _strip_module_prefix(stem: str, profile: dict[str, Any]) -> str:
@@ -283,12 +353,37 @@ class ProfileProjectAnalysisStage(HarnessStage):
         test_files = self._list_many(ctx.source, _as_list(layout.get("test_dirs")))
         include_files = self._list_many(ctx.source, _as_list(layout.get("include_dirs")))
         all_files = src_files + include_files + test_files
+        _record_profile_trace(
+            ctx,
+            self.name,
+            "scan_source_tree",
+            source_dirs=_as_list(layout.get("source_dirs")),
+            test_dirs=_as_list(layout.get("test_dirs")),
+            include_dirs=_as_list(layout.get("include_dirs")),
+            src_files=len(src_files),
+            test_files=len(test_files),
+            include_files=len(include_files),
+        )
         components = self._collect_components(all_files)
         public_apis = self._collect_public_apis(ctx.source / str(layout.get("public_api_header", "")))
         derived_profile = self._derive_profile(ctx.source, src_files, test_files, include_files, public_apis)
         effective_profile = _merge_missing(self.profile, derived_profile)
         source_test_runs = self._collect_source_test_runs(ctx.source, effective_profile)
         internal_anchors = self._collect_internal_anchors(ctx.source, effective_profile)
+        readme_coverage = effective_profile.get("readme_test_coverage", {})
+        required_rust_tests = readme_coverage.get("required_rust_tests", {})
+        benchmark = readme_coverage.get("benchmark", {})
+        _record_profile_trace(
+            ctx,
+            self.name,
+            "derive_dynamic_profile",
+            component_groups=len(components),
+            public_apis=len(public_apis),
+            test_suites=sorted(effective_profile.get("test_suites", {}).keys()),
+            required_rust_tests={target: len(tests) for target, tests in required_rust_tests.items()},
+            benchmark_tests=len(benchmark.get("operation_tests", [])) if isinstance(benchmark, dict) else 0,
+            source_to_rust_modules=len(effective_profile.get("source_to_rust_modules", {})),
+        )
         ctx.analysis = {
             "profile": _profile_name(self.profile),
             "source_path": str(ctx.source),
@@ -308,6 +403,18 @@ class ProfileProjectAnalysisStage(HarnessStage):
         write(ctx.artifact("01-effective-profile.json"), json.dumps(effective_profile, indent=2, ensure_ascii=False))
         write(ctx.artifact("01-effective-profile.md"), markdown_profile(effective_profile))
         write(ctx.artifact("01-dependency-map.md"), self._dependency_markdown(ctx, src_files, test_files, include_files))
+        _record_profile_trace(
+            ctx,
+            self.name,
+            "write_analysis_artifacts",
+            outputs=[
+                "result/harness/01-analysis.json",
+                "result/harness/01-derived-profile.json",
+                "result/harness/01-effective-profile.json",
+                "result/harness/01-effective-profile.md",
+                "result/harness/01-dependency-map.md",
+            ],
+        )
 
     def _list_many(self, root: Path, subdirs: list[str]) -> list[str]:
         files: list[str] = []
@@ -563,6 +670,14 @@ class ProfileSkeletonGenerationStage(HarnessStage):
             effective profile、规范文档和源码编写 `src/*.rs` 与 `tests/*.rs`。
             """,
         )
+        _record_profile_trace(
+            ctx,
+            self.name,
+            "generate_workspace_scaffold",
+            crate_name=effective.get("crate_name"),
+            out=str(ctx.out),
+            outputs=["Cargo.toml", "src/lib.rs", "MODEL_TASK.md"],
+        )
 
 
 class ProfileContextBuilderStage(HarnessStage):
@@ -588,6 +703,16 @@ class ProfileContextBuilderStage(HarnessStage):
             "internal_parity_anchors": ctx.analysis.get("internal_parity_anchors", {}),
         }
         write(ctx.artifact("03-context.json"), json.dumps(ctx.context_index, indent=2, ensure_ascii=False))
+        _record_profile_trace(
+            ctx,
+            self.name,
+            "build_context_index",
+            module_contexts=len(module_contexts),
+            function_hints=len(ctx.context_index.get("function_hints", [])),
+            public_apis=len(ctx.context_index.get("public_apis", [])),
+            internal_anchor_groups=len(ctx.context_index.get("internal_parity_anchors", {})),
+            output="result/harness/03-context.json",
+        )
 
     def _collect_function_hints(self, source: Path, profile: dict[str, Any]) -> list[dict[str, str]]:
         hints: list[dict[str, str]] = []
@@ -642,6 +767,15 @@ class ProfileParityMatrixStage(HarnessStage):
             ],
         }
         write(ctx.artifact("04-function-parity.json"), json.dumps(parity, indent=2, ensure_ascii=False))
+        _record_profile_trace(
+            ctx,
+            self.name,
+            "build_parity_matrix",
+            public_apis=len(public_apis),
+            expected_api_groups=len(parity["expected_public_apis"]),
+            source_mappings=len(parity["source_to_rust_modules"]),
+            output="result/harness/04-function-parity.json",
+        )
 
     def _public_apis(self, header: Path, profile: dict[str, Any]) -> list[str]:
         pattern = _layout(profile).get("public_api_pattern")
@@ -673,6 +807,17 @@ class ProfileTranslationStage(HarnessStage):
             模型必须在 `{ctx.out}` 下编写或修复 Rust crate。
             验证失败项会保留为下一轮生成修复反馈。
             """,
+        )
+        _record_profile_trace(
+            ctx,
+            self.name,
+            "generate_model_brief",
+            outputs=[
+                "out/MODEL_TASK.md",
+                "result/harness/04-model-generation-brief.md",
+                "result/harness/04-translation.md",
+                "result/harness/04-function-parity.json",
+            ],
         )
 
 
@@ -717,6 +862,15 @@ class ProfileValidationStage(HarnessStage):
         write(ctx.artifact("07-validation.json"), json.dumps(ctx.validation_result, indent=2, ensure_ascii=False))
         generate_report(ctx.root, ctx.source, ctx.out, ctx.result, ctx.logs, ctx.validation_result, ctx.analysis, effective)
         self._append_harness_report(ctx)
+        _record_profile_trace(
+            ctx,
+            self.name,
+            "run_profile_validation",
+            status=ctx.validation_result.get("status"),
+            failures=len(ctx.validation_result.get("failures", [])),
+            cargo_status=ctx.validation_result.get("cargo_test", {}).get("status"),
+            output="result/harness/07-validation.json",
+        )
 
     def _ensure_report_placeholders(self, ctx: ConversionContext) -> None:
         project = display_name(self.profile)
@@ -915,7 +1069,70 @@ def build_profile_stages(profile: dict[str, Any], include_validation: bool = Fal
 
 
 def run_profile_harness(ctx: ConversionContext, profile: dict[str, Any], include_validation: bool = False) -> ConversionContext:
-    return run_stages(ctx, build_profile_stages(profile, include_validation=include_validation))
+    stages = build_profile_stages(profile, include_validation=include_validation)
+    ctx.stage_history = []
+    _reset_profile_trace(ctx)
+    _record_profile_trace(
+        ctx,
+        "ProfileHarness",
+        "start",
+        include_validation=include_validation,
+        planned_stages=[stage.name for stage in stages],
+    )
+    try:
+        total_stages = len(stages)
+        for index, stage in enumerate(stages, start=1):
+            _record_profile_trace(
+                ctx,
+                "ProfileHarness",
+                "stage_start",
+                step=index,
+                total_stages=total_stages,
+                stage_name=stage.name,
+            )
+            before_count = len(ctx.stage_history)
+            try:
+                stage(ctx)
+            except Exception as exc:
+                record = ctx.stage_history[-1] if len(ctx.stage_history) > before_count else {}
+                _record_profile_trace(
+                    ctx,
+                    "ProfileHarness",
+                    "stage_failed",
+                    step=index,
+                    total_stages=total_stages,
+                    stage_name=stage.name,
+                    duration_ms=record.get("duration_ms"),
+                    error=str(exc),
+                )
+                raise
+            record = ctx.stage_history[-1] if len(ctx.stage_history) > before_count else {}
+            _record_profile_trace(
+                ctx,
+                "ProfileHarness",
+                "stage_complete",
+                step=index,
+                total_stages=total_stages,
+                stage_name=stage.name,
+                status=record.get("status"),
+                duration_ms=record.get("duration_ms"),
+            )
+    except Exception as exc:
+        _record_profile_trace(
+            ctx,
+            "ProfileHarness",
+            "failed",
+            error=str(exc),
+            completed_stages=[record.get("stage") for record in ctx.stage_history if record.get("status") == "completed"],
+        )
+        raise
+    _record_profile_trace(
+        ctx,
+        "ProfileHarness",
+        "complete",
+        completed_stages=[record.get("stage") for record in ctx.stage_history if record.get("status") == "completed"],
+    )
+    return ctx
 
 
 
