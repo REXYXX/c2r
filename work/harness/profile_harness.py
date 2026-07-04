@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""动态 profile 驱动的 C 到 Rust 转换执行框架 agent。
+"""动态 profile 驱动的 C 到 Rust 转换执行框架阶段。
 
 markdown profile 只作为人工覆盖层；源码布局、测试映射、benchmark、公共 API
 和 parity 锚点优先由源码分析阶段实时生成。
@@ -15,18 +15,18 @@ from pathlib import Path
 from typing import Any
 
 from generic_harness import (
-    Agent,
-    CompileAgent,
-    ConstraintLoadingAgent,
     ConversionContext,
-    OutputScaffoldAgent,
-    RepairAgent,
+    CompileStage,
+    ConstraintLoadingStage,
+    HarnessStage,
+    OutputScaffoldStage,
+    RepairStage,
     check_artifact_structure,
     check_required_files,
     check_token_map,
     count_token_in_rust,
     read_text,
-    run_agents,
+    run_stages,
     run_cargo,
     text_block,
     write,
@@ -271,8 +271,8 @@ def _merge_readme_coverage(unit_coverage: dict[str, Any], benchmark_coverage: di
     return merged
 
 
-class ProfileProjectAnalysisAgent(Agent):
-    name = "ProjectAnalysisAgent"
+class ProfileProjectAnalysisStage(HarnessStage):
+    name = "ProjectAnalysisStage"
 
     def __init__(self, profile: dict[str, Any]) -> None:
         self.profile = profile
@@ -543,8 +543,8 @@ class ProfileProjectAnalysisAgent(Agent):
         """
 
 
-class ProfileSkeletonGenerationAgent(Agent):
-    name = "SkeletonGenerationAgent"
+class ProfileSkeletonGenerationStage(HarnessStage):
+    name = "SkeletonGenerationStage"
 
     def __init__(self, profile: dict[str, Any]) -> None:
         self.profile = profile
@@ -565,8 +565,8 @@ class ProfileSkeletonGenerationAgent(Agent):
         )
 
 
-class ProfileContextBuilderAgent(Agent):
-    name = "ContextBuilderAgent"
+class ProfileContextBuilderStage(HarnessStage):
+    name = "ContextBuilderStage"
 
     def __init__(self, profile: dict[str, Any]) -> None:
         self.profile = profile
@@ -618,8 +618,8 @@ class ProfileContextBuilderAgent(Agent):
         return hints
 
 
-class ProfileParityMatrixAgent(Agent):
-    name = "ParityMatrixAgent"
+class ProfileParityMatrixStage(HarnessStage):
+    name = "ParityMatrixStage"
 
     def __init__(self, profile: dict[str, Any]) -> None:
         self.profile = profile
@@ -651,8 +651,8 @@ class ProfileParityMatrixAgent(Agent):
         return sorted(set(re.findall(str(pattern), text)))
 
 
-class ProfileTranslationAgent(Agent):
-    name = "TranslationAgent"
+class ProfileTranslationStage(HarnessStage):
+    name = "TranslationStage"
 
     def __init__(self, profile: dict[str, Any]) -> None:
         self.profile = profile
@@ -676,8 +676,8 @@ class ProfileTranslationAgent(Agent):
         )
 
 
-class ProfileValidationAgent(Agent):
-    name = "ValidationAgent"
+class ProfileValidationStage(HarnessStage):
+    name = "ValidationStage"
 
     def __init__(self, profile: dict[str, Any]) -> None:
         self.profile = profile
@@ -879,37 +879,43 @@ class ProfileValidationAgent(Agent):
 
             执行框架产物位于 `{ctx.result / "harness"}`。
 
-            - OutputScaffoldAgent：创建 result 和 logs 产物结构。
-            - ConstraintLoadingAgent：加载 markdown profile 约束。
-            - ProjectAnalysisAgent：生成源码清单和组件分组。
-            - SkeletonGenerationAgent：准备 Cargo crate 布局。
-            - ContextBuilderAgent：生成模块/函数上下文。
-            - ParityMatrixAgent：生成 profile 提供的 parity 矩阵。
-            - TranslationAgent：生成面向模型的 Rust 生成任务。
-            - CompileAgent：Cargo 可用时记录 `cargo check` 诊断。
-            - RepairAgent：整理编译结果和修复判断。
-            - ValidationAgent：执行 profile 驱动的验证门禁。
+            - OutputScaffoldStage：创建 result 和 logs 产物结构。
+            - ConstraintLoadingStage：加载 markdown profile 约束。
+            - ProjectAnalysisStage：生成源码清单和组件分组。
+            - SkeletonGenerationStage：准备 Cargo crate 布局。
+            - ContextBuilderStage：生成模块/函数上下文。
+            - ParityMatrixStage：生成 profile 提供的 parity 矩阵。
+            - TranslationStage：生成面向模型的 Rust 生成任务。
+            - CompileStage：Cargo 可用时记录 `cargo check` 诊断。
+            - RepairStage：整理编译结果和修复判断。
+            - ValidationStage：执行 profile 驱动的验证门禁。
             """
         write(report, existing + text_block(rendered))
 
 
-def build_profile_agents(profile: dict[str, Any]) -> list[Agent]:
-    return [
-        OutputScaffoldAgent(),
-        ConstraintLoadingAgent(profile.get("constraint_files", []), profile.get("constraint_summary_md")),
-        ProfileProjectAnalysisAgent(profile),
-        ProfileSkeletonGenerationAgent(profile),
-        ProfileContextBuilderAgent(profile),
-        ProfileParityMatrixAgent(profile),
-        ProfileTranslationAgent(profile),
-        CompileAgent(),
-        RepairAgent(),
-        ProfileValidationAgent(profile),
+def build_profile_stages(profile: dict[str, Any], include_validation: bool = False) -> list[HarnessStage]:
+    stages: list[HarnessStage] = [
+        OutputScaffoldStage(),
+        ConstraintLoadingStage(profile.get("constraint_files", []), profile.get("constraint_summary_md")),
+        ProfileProjectAnalysisStage(profile),
+        ProfileSkeletonGenerationStage(profile),
+        ProfileContextBuilderStage(profile),
+        ProfileParityMatrixStage(profile),
+        ProfileTranslationStage(profile),
     ]
+    if include_validation:
+        stages.extend(
+            [
+                CompileStage(),
+                RepairStage(),
+                ProfileValidationStage(profile),
+            ]
+        )
+    return stages
 
 
-def run_profile_harness(ctx: ConversionContext, profile: dict[str, Any]) -> ConversionContext:
-    return run_agents(ctx, build_profile_agents(profile))
+def run_profile_harness(ctx: ConversionContext, profile: dict[str, Any], include_validation: bool = False) -> ConversionContext:
+    return run_stages(ctx, build_profile_stages(profile, include_validation=include_validation))
 
 
 

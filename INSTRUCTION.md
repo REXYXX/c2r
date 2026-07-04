@@ -4,11 +4,12 @@
 
 执行型编码模型必须先运行通用 harness，让框架根据 `--source` 动态生成
 `MODEL_TASK.md`、`01-effective-profile.md`、`03-context.json`、
-`04-function-parity.json` 和 `07-validation.json`，再按这些产物编写或修复 Rust。
+`04-function-parity.json`，再按这些产物编写 Rust。只有 Rust 代码写完后，
+才运行验证阶段生成 `07-validation.json`。
 
 执行顺序必须通过 `logs/trace/` 中的执行路径产物审计：
 
-- `logs/trace/execution-plan.json`：harness 设计的预期 Agent 顺序。
+- `logs/trace/execution-plan.json`：harness 设计的预期 HarnessStage 顺序。
 - `logs/trace/execution-path.json`：实际执行顺序、每阶段状态、耗时和关键产物。
 - `logs/trace/execution-path.md`：便于人工快速查看的执行路径表。
 - `logs/trace/events.jsonl`：按时间追加的原子事件流。
@@ -33,9 +34,11 @@ python3 work/run_conversion.py \
   --logs logs
 ```
 
-首次运行失败是正常的，因为 Rust crate 还没有被模型实现。首次运行的目的
-是生成动态 profile、模型任务书和验证缺口。实现或修复完成后运行严格入口：
+首次运行是 bootstrap 阶段，只生成动态 profile、上下文、parity 矩阵和
+`MODEL_TASK.md`，不会运行 `CompileStage`、`RepairStage`、`ValidationStage`。
+实现或修复完成后运行严格入口：
 
+本地开发示例：
 ```bash
 python3 work/run_conversion.py \
   --source /mnt/d/c2rust/c2rust/FlashDB \
@@ -44,16 +47,14 @@ python3 work/run_conversion.py \
   --logs logs \
   --strict
 ```
-
-如果需要保留 FlashDB 的历史输出目录命名，也可以增加可选覆盖 profile：
+评测环境示例：
 
 ```bash
 python3 work/run_conversion.py \
-  --profile work/profiles/flashdb.md \
-  --source /mnt/d/c2rust/c2rust/FlashDB \
+  --source /app/code/judge-assets/02_02_c_to_rust/code/FlashDB \
   --out flashDB_rust \
   --result result \
-  --logs logs \
+  --logs logs
   --strict
 ```
 
@@ -67,7 +68,7 @@ python3 work/run_conversion.py \
 
 ## 1. 设计原则
 
-本工程提供源码驱动的通用 Agent Harness，而不是 FlashDB 专属转换脚本。
+本工程提供源码驱动的通用 HarnessStage 执行框架，而不是 FlashDB 专属转换脚本。
 Python 负责调度、trace、命令执行、源码实时分析、动态 profile 生成、模型任务书
 和通用验证；Rust 业务实现必须由模型基于源码和生成产物编写。
 
@@ -99,36 +100,45 @@ result/harness/01-effective-profile.md
 - `--result`：报告和 harness 阶段产物目录，默认 `result`。
 - `--logs`：交互记录和 trace 日志目录，默认 `logs`。
 - `--cargo`：Cargo 可执行文件名，默认 `cargo`。
+- `--validate`：显式运行 compile/repair/validation 阶段；调试时可用。
 - `--strict`：验证未通过时返回非零；正式评测必须使用。
 - `--skip-cargo`：仅限本地诊断，正式评测不得使用。
 
 ## 3. Harness 阶段
 
-Harness 按以下阶段执行，每个阶段都会向 `result/harness/` 写入可审计产物：
+Harness 分为 bootstrap 和 validation 两段，每个阶段都会向 `result/harness/`
+和 `logs/trace/` 写入可审计产物。
 
-1. `OutputScaffoldAgent`：创建 `result/`、`logs/` 和 trace 结构。
-2. `ConstraintLoadingAgent`：加载通用 Rust 设计规则和可选 profile 覆盖项。
-3. `ProjectAnalysisAgent`：扫描 C 源码并生成 derived/effective profile。
-4. `SkeletonGenerationAgent`：准备 Cargo crate 外壳；不写 Rust 实现。
-5. `ContextBuilderAgent`：生成模块上下文、函数线索和公共 API 索引。
-6. `ParityMatrixAgent`：生成公共 API 与源码模块 parity 矩阵。
-7. `TranslationAgent`：生成 `MODEL_TASK.md`，指导模型编写 Rust。
-8. `CompileAgent`：执行 `cargo check` 并记录诊断。
-9. `RepairAgent`：整理编译结果和修复判断。
-10. `ValidationAgent`：检查结构、API parity、测试覆盖、benchmark 覆盖、`unsafe`
+默认 bootstrap 阶段只执行：
+
+1. `OutputScaffoldStage`：创建 `result/`、`logs/` 和 trace 结构。
+2. `ConstraintLoadingStage`：加载通用 Rust 设计规则和可选 profile 覆盖项。
+3. `ProjectAnalysisStage`：扫描 C 源码并生成 derived/effective profile。
+4. `SkeletonGenerationStage`：准备 Cargo crate 外壳；不写 Rust 实现。
+5. `ContextBuilderStage`：生成模块上下文、函数线索和公共 API 索引。
+6. `ParityMatrixStage`：生成公共 API 与源码模块 parity 矩阵。
+7. `TranslationStage`：生成 `MODEL_TASK.md`，指导模型编写 Rust。
+
+当传入 `--validate` 或 `--strict` 时，继续执行：
+
+8. `CompileStage`：执行 `cargo check` 并记录诊断。
+9. `RepairStage`：整理编译结果和修复判断。
+10. `ValidationStage`：检查结构、API parity、测试覆盖、benchmark 覆盖、`unsafe`
     使用，并在 Cargo 可用时执行 `cargo test`。
 
 每个阶段完成后，harness 都会将阶段记录追加到 `logs/trace/execution-path.json`，
-包括 `step`、`agent`、`expected_agent`、`order_ok`、`status`、`duration_ms`
-和该阶段关键输出文件是否存在。判断模型是否按序执行时，以 `order_ok` 和
-`actual_sequence` 是否匹配 `expected_sequence` 为准。
+包括 `step`、`stage`、`expected_stage`、`order_ok`、`status`、`duration_ms`
+和该阶段关键输出文件是否存在。bootstrap 阶段的 `expected_sequence` 应只包含
+前 7 个 HarnessStage；严格验证阶段的 `expected_sequence` 应包含 10 个 HarnessStage。
+判断模型是否按序执行时，以 `order_ok` 和 `actual_sequence` 是否匹配
+`expected_sequence` 为准。
 
 代码分层：
 
 ```text
-work/harness/generic_harness.py      # 通用上下文、Agent 基类、trace、约束加载、cargo 调度
+work/harness/generic_harness.py      # 通用上下文、HarnessStage 基类、trace、约束加载、cargo 调度
 work/harness/profile_generator.py    # 从 C 工程动态生成 profile
-work/harness/profile_harness.py      # 源码分析、上下文、parity、translation brief 和 validation agents
+work/harness/profile_harness.py      # 源码分析、上下文、parity、translation brief 和 validation stages
 work/harness/model_artifacts.py      # scaffold、MODEL_TASK.md 和报告生成，不写 Rust 实现
 work/run_conversion.py               # 通用入口：--source + 可选 --profile
 work/profiles/flashdb.md             # FlashDB 可选覆盖项，不承载测试/API/benchmark 清单

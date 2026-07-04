@@ -44,59 +44,59 @@ def load_markdown_profile(path: Path, block_name: str = "harness-profile") -> di
 
 
 HARNESS_STAGE_DESCRIPTIONS = {
-    "OutputScaffoldAgent": "创建 result/logs/trace 基础目录和交互日志。",
-    "ConstraintLoadingAgent": "加载通用 Rust 设计规则和可选覆盖 profile。",
-    "ProjectAnalysisAgent": "扫描 C 源码并生成 derived/effective profile。",
-    "SkeletonGenerationAgent": "准备 Cargo crate 外壳，不写 Rust 实现。",
-    "ContextBuilderAgent": "生成模块上下文、函数线索和公共 API 索引。",
-    "ParityMatrixAgent": "生成公共 API 与源码模块 parity 矩阵。",
-    "TranslationAgent": "生成 MODEL_TASK.md 和模型生成指引。",
-    "CompileAgent": "执行或跳过 cargo check，并记录诊断。",
-    "RepairAgent": "整理编译结果和修复判断。",
-    "ValidationAgent": "执行结构、API、测试覆盖和 cargo test 验证。",
+    "OutputScaffoldStage": "创建 result/logs/trace 基础目录和交互日志。",
+    "ConstraintLoadingStage": "加载通用 Rust 设计规则和可选覆盖 profile。",
+    "ProjectAnalysisStage": "扫描 C 源码并生成 derived/effective profile。",
+    "SkeletonGenerationStage": "准备 Cargo crate 外壳，不写 Rust 实现。",
+    "ContextBuilderStage": "生成模块上下文、函数线索和公共 API 索引。",
+    "ParityMatrixStage": "生成公共 API 与源码模块 parity 矩阵。",
+    "TranslationStage": "生成 MODEL_TASK.md 和模型生成指引。",
+    "CompileStage": "执行或跳过 cargo check，并记录诊断。",
+    "RepairStage": "整理编译结果和修复判断。",
+    "ValidationStage": "执行结构、API、测试覆盖和 cargo test 验证。",
 }
 
 
 HARNESS_STAGE_OUTPUTS = {
-    "OutputScaffoldAgent": [
+    "OutputScaffoldStage": [
         "logs/interaction.md",
         "logs/trace/scaffold.json",
         "logs/trace/events.jsonl",
         "logs/trace/execution-plan.json",
     ],
-    "ConstraintLoadingAgent": [
+    "ConstraintLoadingStage": [
         "result/harness/00-constraints.json",
         "result/harness/00-constraints.md",
     ],
-    "ProjectAnalysisAgent": [
+    "ProjectAnalysisStage": [
         "result/harness/01-analysis.json",
         "result/harness/01-derived-profile.json",
         "result/harness/01-effective-profile.json",
         "result/harness/01-effective-profile.md",
         "result/harness/01-dependency-map.md",
     ],
-    "SkeletonGenerationAgent": [
+    "SkeletonGenerationStage": [
         "out/Cargo.toml",
         "result/harness/02-skeleton.md",
     ],
-    "ContextBuilderAgent": [
+    "ContextBuilderStage": [
         "result/harness/03-context.json",
     ],
-    "ParityMatrixAgent": [
+    "ParityMatrixStage": [
         "result/harness/04-function-parity.json",
     ],
-    "TranslationAgent": [
+    "TranslationStage": [
         "out/MODEL_TASK.md",
         "result/harness/04-model-generation-brief.md",
         "result/harness/04-translation.md",
     ],
-    "CompileAgent": [
+    "CompileStage": [
         "result/harness/05-compile.json",
     ],
-    "RepairAgent": [
+    "RepairStage": [
         "result/harness/06-repair.json",
     ],
-    "ValidationAgent": [
+    "ValidationStage": [
         "result/harness/07-validation.json",
         "result/output.md",
         "result/issues/00-summary.md",
@@ -129,12 +129,12 @@ class ConversionContext:
     def trace_artifact(self, relative: str) -> Path:
         return self.logs / "trace" / relative
 
-    def log(self, agent: str, status: str, **data: Any) -> dict[str, Any]:
+    def log(self, stage: str, status: str, **data: Any) -> dict[str, Any]:
         event = {
             "event_index": len(self.events) + 1,
             "time": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
             "profile": self.profile,
-            "agent": agent,
+            "stage": stage,
             "status": status,
             **data,
         }
@@ -145,15 +145,17 @@ class ConversionContext:
             file.write(json.dumps(event, ensure_ascii=False) + "\n")
         return event
 
-    def initialize_execution_plan(self, agents: Sequence["Agent"]) -> None:
+    def initialize_execution_plan(self, stages: Sequence["HarnessStage"]) -> None:
+        self.events = []
+        write(self.trace_artifact("events.jsonl"), "")
         self.execution_plan = [
             {
                 "step": index,
-                "agent": agent.name,
-                "description": HARNESS_STAGE_DESCRIPTIONS.get(agent.name, ""),
-                "expected_outputs": HARNESS_STAGE_OUTPUTS.get(agent.name, []),
+                "stage": stage.name,
+                "description": HARNESS_STAGE_DESCRIPTIONS.get(stage.name, ""),
+                "expected_outputs": HARNESS_STAGE_OUTPUTS.get(stage.name, []),
             }
-            for index, agent in enumerate(agents, start=1)
+            for index, stage in enumerate(stages, start=1)
         ]
         write(
             self.trace_artifact("execution-plan.json"),
@@ -164,7 +166,7 @@ class ConversionContext:
                     "out": str(self.out),
                     "result": str(self.result),
                     "logs": str(self.logs),
-                    "expected_sequence": [item["agent"] for item in self.execution_plan],
+                    "expected_sequence": [item["stage"] for item in self.execution_plan],
                     "plan": self.execution_plan,
                 },
                 indent=2,
@@ -177,9 +179,9 @@ class ConversionContext:
         self.execution_path.append(record)
         self.write_execution_path()
 
-    def stage_outputs(self, agent_name: str) -> list[dict[str, Any]]:
+    def stage_outputs(self, stage_name: str) -> list[dict[str, Any]]:
         outputs = []
-        for logical_path in HARNESS_STAGE_OUTPUTS.get(agent_name, []):
+        for logical_path in HARNESS_STAGE_OUTPUTS.get(stage_name, []):
             resolved = self.resolve_logical_path(logical_path)
             outputs.append(
                 {
@@ -201,8 +203,8 @@ class ConversionContext:
         return self.root / logical_path
 
     def write_execution_path(self) -> None:
-        expected = [item["agent"] for item in self.execution_plan]
-        actual = [item["agent"] for item in self.execution_path]
+        expected = [item["stage"] for item in self.execution_plan]
+        actual = [item["stage"] for item in self.execution_path]
         prefix_ok = actual == expected[: len(actual)]
         completed = len(actual) == len(expected) and all(item.get("status") == "completed" for item in self.execution_path)
         order_ok = prefix_ok and all(item.get("order_ok", False) for item in self.execution_path)
@@ -232,7 +234,7 @@ class ConversionContext:
             order = "yes" if record.get("order_ok") else ("pending" if status == "pending" else "no")
             outputs = record.get("outputs", [])
             output_summary = f"{sum(1 for item in outputs if item.get('exists'))}/{len(outputs)}" if outputs else "-"
-            rows.append(f"| {planned['step']} | `{planned['agent']}` | {status} | {order} | {duration} | {output_summary} |")
+            rows.append(f"| {planned['step']} | `{planned['stage']}` | {status} | {order} | {duration} | {output_summary} |")
         table = "\n".join(rows)
         return f"""
         # Harness 执行路径
@@ -242,14 +244,14 @@ class ConversionContext:
         - 预期顺序：`{" -> ".join(payload["expected_sequence"])}`
         - 实际顺序：`{" -> ".join(payload["actual_sequence"]) or "尚未开始"}`
 
-        | Step | Agent | Status | Order OK | Duration ms | Outputs |
+        | Step | HarnessStage | Status | Order OK | Duration ms | Outputs |
         | --- | --- | --- | --- | --- | --- |
         {table}
         """
 
 
-class Agent:
-    name = "Agent"
+class HarnessStage:
+    name = "HarnessStage"
 
     def run(self, ctx: ConversionContext) -> None:
         raise NotImplementedError
@@ -260,13 +262,13 @@ class Agent:
         *,
         step_index: int | None = None,
         total_steps: int | None = None,
-        expected_agent: str | None = None,
+        expected_stage: str | None = None,
     ) -> None:
-        order_ok = expected_agent in {None, self.name}
+        order_ok = expected_stage in {None, self.name}
         stage_data = {
             "step": step_index,
             "total_steps": total_steps,
-            "expected_agent": expected_agent,
+            "expected_stage": expected_stage,
             "order_ok": order_ok,
         }
         started_at = time.monotonic()
@@ -286,7 +288,7 @@ class Agent:
             ctx.record_stage(
                 {
                     **stage_data,
-                    "agent": self.name,
+                    "stage": self.name,
                     "status": "failed",
                     "duration_ms": duration_ms,
                     "started_event_index": started_event["event_index"],
@@ -305,7 +307,7 @@ class Agent:
         ctx.record_stage(
             {
                 **stage_data,
-                "agent": self.name,
+                "stage": self.name,
                 "status": "completed",
                 "duration_ms": duration_ms,
                 "started_event_index": started_event["event_index"],
@@ -315,8 +317,8 @@ class Agent:
         )
 
 
-class OutputScaffoldAgent(Agent):
-    name = "OutputScaffoldAgent"
+class OutputScaffoldStage(HarnessStage):
+    name = "OutputScaffoldStage"
 
     def run(self, ctx: ConversionContext) -> None:
         ctx.result.mkdir(parents=True, exist_ok=True)
@@ -344,8 +346,8 @@ class OutputScaffoldAgent(Agent):
         )
 
 
-class ConstraintLoadingAgent(Agent):
-    name = "ConstraintLoadingAgent"
+class ConstraintLoadingStage(HarnessStage):
+    name = "ConstraintLoadingStage"
 
     def __init__(self, constraint_files: Sequence[str], summary_markdown: str | None = None) -> None:
         self.constraint_files = list(constraint_files)
@@ -388,8 +390,8 @@ class ConstraintLoadingAgent(Agent):
         """
 
 
-class CompileAgent(Agent):
-    name = "CompileAgent"
+class CompileStage(HarnessStage):
+    name = "CompileStage"
 
     def run(self, ctx: ConversionContext) -> None:
         cargo_path = shutil.which(ctx.cargo)
@@ -403,8 +405,8 @@ class CompileAgent(Agent):
         write(ctx.artifact("05-compile.json"), json.dumps(ctx.compile_result, indent=2, ensure_ascii=False))
 
 
-class RepairAgent(Agent):
-    name = "RepairAgent"
+class RepairStage(HarnessStage):
+    name = "RepairStage"
 
     def run(self, ctx: ConversionContext) -> None:
         status = ctx.compile_result.get("status")
@@ -483,11 +485,11 @@ def check_token_map(out: Path, expected: dict[str, Sequence[str]]) -> dict[str, 
     return result
 
 
-def run_agents(ctx: ConversionContext, agents: Sequence[Agent]) -> ConversionContext:
-    ctx.initialize_execution_plan(agents)
-    ctx.log("Harness", "plan_created", total_steps=len(agents), expected_sequence=[agent.name for agent in agents])
-    for index, agent in enumerate(agents, start=1):
-        agent(ctx, step_index=index, total_steps=len(agents), expected_agent=ctx.execution_plan[index - 1]["agent"])
+def run_stages(ctx: ConversionContext, stages: Sequence[HarnessStage]) -> ConversionContext:
+    ctx.initialize_execution_plan(stages)
+    ctx.log("Harness", "plan_created", total_steps=len(stages), expected_sequence=[stage.name for stage in stages])
+    for index, stage in enumerate(stages, start=1):
+        stage(ctx, step_index=index, total_steps=len(stages), expected_stage=ctx.execution_plan[index - 1]["stage"])
     write(ctx.artifact("00-events.json"), json.dumps(ctx.events, indent=2, ensure_ascii=False))
     ctx.write_execution_path()
     return ctx

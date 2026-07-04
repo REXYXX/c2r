@@ -290,16 +290,16 @@ def _report_appendix() -> str:
     return (
         "## 执行框架阶段记录\n\n"
         "执行框架产物位于 `{harness_dir}`。\n\n"
-        "- OutputScaffoldAgent：创建 result/logs 产物结构。\n"
-        "- ConstraintLoadingAgent：加载通用约束和可选 profile 覆盖项。\n"
-        "- ProjectAnalysisAgent：从 C 工程实时生成 effective profile、API、测试、benchmark、源码映射和内部锚点。\n"
-        "- SkeletonGenerationAgent：准备 Cargo crate 布局。\n"
-        "- ContextBuilderAgent：生成最小模块/函数上下文。\n"
-        "- ParityMatrixAgent：生成公共 API 与源码锚点矩阵。\n"
-        "- TranslationAgent：生成 Rust 模块和完整测试迁移任务。\n"
-        "- CompileAgent：Cargo 可用时记录 `cargo check` 诊断。\n"
-        "- RepairAgent：整理编译结果和修复判断。\n"
-        "- ValidationAgent：执行结构检查、API parity、测试覆盖、benchmark 覆盖和 `cargo test`。"
+        "- OutputScaffoldStage：创建 result/logs 产物结构。\n"
+        "- ConstraintLoadingStage：加载通用约束和可选 profile 覆盖项。\n"
+        "- ProjectAnalysisStage：从 C 工程实时生成 effective profile、API、测试、benchmark、源码映射和内部锚点。\n"
+        "- SkeletonGenerationStage：准备 Cargo crate 布局。\n"
+        "- ContextBuilderStage：生成最小模块/函数上下文。\n"
+        "- ParityMatrixStage：生成公共 API 与源码锚点矩阵。\n"
+        "- TranslationStage：生成 Rust 模块和完整测试迁移任务。\n"
+        "- CompileStage：Cargo 可用时记录 `cargo check` 诊断。\n"
+        "- RepairStage：整理编译结果和修复判断。\n"
+        "- ValidationStage：执行结构检查、API parity、测试覆盖、benchmark 覆盖和 `cargo test`。"
     )
 
 

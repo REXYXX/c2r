@@ -34,6 +34,7 @@ def main() -> int:
     parser.add_argument("--logs", default="logs", help="交互记录和 trace 产物日志目录")
     parser.add_argument("--cargo", default="cargo", help="Cargo 可执行文件")
     parser.add_argument("--skip-cargo", action="store_true", help="即使存在 cargo 也跳过 cargo check/test")
+    parser.add_argument("--validate", action="store_true", help="运行 compile/repair/validation 阶段；--strict 会自动启用")
     parser.add_argument("--strict", action="store_true", help="验证状态不是 passed 时返回非零")
     args = parser.parse_args()
 
@@ -59,16 +60,20 @@ def main() -> int:
         skip_cargo=args.skip_cargo,
         profile=str(profile.get("profile") or (profile_path.stem if profile_path else "project")),
     )
-    run_profile_harness(ctx, profile)
-    validation_status = ctx.validation_result.get("status", "unknown")
+    include_validation = args.validate or args.strict
+    run_profile_harness(ctx, profile, include_validation=include_validation)
+    validation_status = ctx.validation_result.get("status", "not_run")
     print(f"profile：{profile_path if profile_path else '动态生成'}")
     print(f"源项目：{ctx.source}")
     print(f"生成的 Rust 项目：{ctx.out}")
     print(f"执行框架产物：{ctx.result / 'harness'}")
     print(f"动态 profile：{ctx.result / 'harness' / '01-effective-profile.md'}")
     print(f"日志产物：{ctx.logs}")
-    print(f"验证文件：{ctx.result / 'harness' / '07-validation.json'}")
-    print(f"验证状态：{validation_status}")
+    if include_validation:
+        print(f"验证文件：{ctx.result / 'harness' / '07-validation.json'}")
+        print(f"验证状态：{validation_status}")
+    else:
+        print("验证阶段：未运行（bootstrap 阶段只生成任务书和动态 profile）")
     if args.strict and validation_status != "passed":
         print("严格验证失败", file=sys.stderr)
         for failure in ctx.validation_result.get("failures", []):
