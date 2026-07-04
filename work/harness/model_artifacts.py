@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Model-facing artifact helpers for profile-driven C-to-Rust conversions.
+"""面向模型的产物辅助函数，用于动态 profile 驱动的 C 到 Rust 转换。
 
-This module prepares directories, Cargo metadata, model briefs, and reports. It
-must stay project-neutral: domain rules, expected Rust files, API tokens, and
-test requirements are read from the markdown profile.
+本模块只准备目录、Cargo 元数据、模型任务书和报告。必需 Rust 文件、
+API token 和测试要求来自源码实时分析生成的 effective profile，markdown
+profile 只作为可选覆盖层。
 """
 
 from __future__ import annotations
@@ -60,15 +60,15 @@ def output_dir_name(profile: dict[str, Any]) -> str:
 
 def source_label(profile: dict[str, Any]) -> str:
     artifact = artifact_config(profile)
-    return str(artifact.get("source_label") or "C source")
+    return str(artifact.get("source_label") or "C 源码")
 
 
 def generate_workspace_scaffold(out: Path, profile: dict[str, Any] | None = None, crate: str | None = None) -> None:
-    """Create only the model work area and Cargo manifest.
+    """只创建模型工作区和 Cargo 清单。
 
-    Existing Rust files are left untouched. The manifest gives the model a valid
-    crate shell; all Rust implementation and test files must be authored by the
-    coding model from source context and profile constraints.
+    已存在的 Rust 文件保持不变。这里仅给模型一个可构建的 crate 外壳；
+    所有 Rust 实现和测试文件都必须由编码模型基于源码上下文和 profile
+    约束编写。
     """
     profile = profile or {}
     resolved_crate = crate_name(profile, crate)
@@ -81,7 +81,7 @@ def generate_workspace_scaffold(out: Path, profile: dict[str, Any] | None = None
         name = "{resolved_crate}"
         version = "0.1.0"
         edition = "2021"
-        description = "Model-authored safe Rust rewrite of {display_name(profile)}"
+        description = "由模型编写的 {display_name(profile)} 安全 Rust 重写"
         license = "MIT"
 
         [lib]
@@ -103,7 +103,7 @@ def generate_model_brief(
     analysis: dict[str, Any] | None = None,
     context_index: dict[str, Any] | None = None,
 ) -> None:
-    """Emit markdown instructions that guide the model to write Rust code."""
+    """输出用于指导模型编写 Rust 代码的 markdown 任务书。"""
     del root
     analysis = analysis or {}
     context_index = context_index or {}
@@ -117,10 +117,10 @@ def generate_model_brief(
     source_runs = analysis.get("source_test_runs", {})
     project = display_name(profile)
     artifact = artifact_config(profile)
-    task_title = artifact.get("task_title") or f"{project} Rust Model Task"
+    task_title = artifact.get("task_title") or f"{project} Rust 模型任务"
 
     def bullets(values: list[str]) -> str:
-        return "\n".join(f"- `{value}`" for value in values) if values else "- none"
+        return "\n".join(f"- `{value}`" for value in values) if values else "- 无"
 
     def json_block(value: Any) -> str:
         return json.dumps(value, indent=2, ensure_ascii=False)
@@ -129,79 +129,78 @@ def generate_model_brief(
         [
             f"# {task_title}",
             "",
-            "The Python harness does not generate the Rust implementation. Write the",
-            f"Rust crate under `{out}` by reading the source project and the constraint",
-            "documents listed here.",
+            "Python 执行框架不会生成 Rust 实现。请读取源项目和下列约束文档，",
+            f"在 `{out}` 下编写 Rust crate。",
             "",
-            "## Source And Output",
+            "## 源码与输出",
             "",
             f"- {source_label(profile)}: `{source}`",
-            f"- Rust crate output: `{out}`",
-            f"- Result artifacts: `{result}`",
-            f"- Logs: `{logs}`",
+            f"- Rust crate 输出：`{out}`",
+            f"- 结果产物：`{result}`",
+            f"- 日志目录：`{logs}`",
             "",
-            "## Required Constraint Documents",
+            "## 必读约束文档",
             "",
             bullets(constraint_files),
             "",
-            "## Required Rust Files",
+            "## 必需 Rust 文件",
             "",
             bullets(required_files),
             "",
-            "## Source To Rust Module Mapping",
+            "## 源码到 Rust 模块映射",
             "",
             "```json",
             json_block(source_to_rust),
             "```",
             "",
-            "## Public C API Parity Tokens",
+            "## 公共 C API 等价 token",
             "",
             "```json",
             json_block(c_api),
             "```",
             "",
-            "## One-To-One Logic Checks",
+            "## 附加逻辑覆盖检查",
             "",
             "```json",
             json_block(one_to_one),
             "```",
             "",
-            "## Behaviour Shortcut Rejection Rules",
+            "## 快捷实现拦截规则",
             "",
             "```json",
             json_block(rejection),
             "```",
             "",
-            "## Source Test Runs To Translate",
+            "## 需要迁移的源码测试",
             "",
             "```json",
             json_block(source_runs),
             "```",
             "",
-            "## README And Benchmark Coverage",
+            "## README 与 benchmark 覆盖",
             "",
-            "Translate every unit test and benchmark item declared by the profile.",
-            "Benchmark cases should validate operation semantics and sane measurement",
-            "fields; they should not depend on fixed wall-clock performance thresholds.",
+            "必须迁移动态 profile 声明的每个单元测试和 benchmark 项。",
+            "benchmark 用例应校验操作语义和测量结果字段是否合理；",
+            "不要依赖固定墙钟耗时阈值。",
             "",
             "```json",
             json_block(readme_coverage),
             "```",
             "",
-            "## Context Index",
+            "## 上下文索引",
             "",
             "```json",
             json_block(context_index),
             "```",
             "",
-            "## Work Rules",
+            "## 工作规则",
             "",
-            f"- Author Rust source files directly in `{out}`; do not add Rust source to Python.",
-            "- Preserve module boundaries from the source-to-Rust mapping.",
-            "- Use safe Rust only and avoid C FFI unless a profile explicitly permits it.",
-            "- Translate every source test entry required by the profile into Rust tests.",
-            "- Run `cargo check` and `cargo test` once the crate is authored.",
-            "- Treat validation failures as generation guidance, not as reasons to weaken the profile checks.",
+            f"- 直接在 `{out}` 中编写 Rust 源码；不要把 Rust 源码写进 Python。",
+            "- 保留源码到 Rust 模块映射声明的模块边界。",
+            "- 仅使用安全 Rust；除非动态 profile 明确允许，不要使用 C FFI。",
+            "- 把动态 profile 要求的每个源码测试项都迁移为 Rust 测试。",
+            "- crate 编写完成后运行 `cargo check` 和 `cargo test`。",
+            "- 把验证失败视为生成修复提示，不要为了通过而削弱 profile 检查。",
             "",
         ]
     )
@@ -225,73 +224,70 @@ def generate_report(
     validation = validation or {}
     analysis = analysis or {}
     now = _dt.datetime.now(_dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-    status = "found" if source.exists() else "not found in this environment"
+    status = "已找到" if source.exists() else "当前环境未找到"
     failures = validation.get("failures", [])
     cargo_test = validation.get("cargo_test", {"status": "not_run"})
     artifact = artifact_config(profile)
-    report_title = artifact.get("report_title") or f"{display_name(profile)} Rust Conversion Harness Report"
+    report_title = artifact.get("report_title") or f"{display_name(profile)} Rust 转换执行框架报告"
 
     def bullet_list(values: list[str]) -> str:
-        return "\n".join(f"- `{value}`" for value in values) if values else "- none"
+        return "\n".join(f"- `{value}`" for value in values) if values else "- 无"
 
     write(
         result / "output.md",
         f"""
         # {report_title}
 
-        Generated at: {now}
+        生成时间：{now}
 
-        ## Inputs
+        ## 输入
 
         - {source_label(profile)}: `{source}` ({status})
-        - Rust output project: `{out}`
-        - Result directory: `{result}`
-        - Logs directory: `{logs}`
+        - Rust 输出项目：`{out}`
+        - 结果目录：`{result}`
+        - 日志目录：`{logs}`
 
-        ## Harness Role
+        ## 执行框架职责
 
-        Python prepares the work area, source inventory, model task brief, and
-        validation artifacts. It does not contain or emit a hard-coded Rust
-        implementation. The model must author Rust source files under `{out}`.
+        Python 只准备工作区、源码清单、模型任务书和验证产物。它不包含也不输出
+        硬编码 Rust 实现。模型必须在 `{out}` 下编写 Rust 源码。
 
-        ## Source Inventory
+        ## 源码清单
 
-        - Source files: {len(analysis.get("src_files", []))}
-        - Test files: {len(analysis.get("test_files", []))}
-        - Header/include files: {len(analysis.get("include_files", []))}
+        - 源码文件：{len(analysis.get("src_files", []))}
+        - 测试文件：{len(analysis.get("test_files", []))}
+        - 头文件/包含文件：{len(analysis.get("include_files", []))}
 
-        ## Validation Result
+        ## 验证结果
 
-        - Validation status: `{validation.get("status", "not_run")}`
-        - Cargo test status: `{cargo_test.get("status", "not_run")}`
+        - 验证状态：`{validation.get("status", "not_run")}`
+        - `cargo test` 状态：`{cargo_test.get("status", "not_run")}`
 
-        ## Failures
+        ## 失败项
 
         {bullet_list(failures)}
 
-        ## Model Brief
+        ## 模型任务书
 
-        Read `{out / "MODEL_TASK.md"}` and
-        `{result / "harness" / "04-model-generation-brief.md"}` before writing
-        or repairing Rust code.
+        编写或修复 Rust 代码前，先阅读 `{out / "MODEL_TASK.md"}` 和
+        `{result / "harness" / "04-model-generation-brief.md"}`。
         """,
     )
     write(
         result / "issues" / "00-summary.md",
         f"""
-        # Conversion summary
+        # 转换摘要
 
-        - Overall status: `{validation.get("status", "not_run")}`
-        - Cargo test status: `{cargo_test.get("status", "not_run")}`
+        - 总体状态：`{validation.get("status", "not_run")}`
+        - `cargo test` 状态：`{cargo_test.get("status", "not_run")}`
 
-        ## Failures
+        ## 失败项
 
         {bullet_list(failures)}
 
-        ## Required next step
+        ## 下一步要求
 
-        The model must write or repair the Rust crate in `{out}` using the
-        profile and model task brief. Python must not be used as a container
-        for prewritten Rust implementation strings.
+        模型必须基于动态 profile 和模型任务书，在 `{out}` 中编写或修复 Rust crate。
+        Python 不得作为预写 Rust 实现字符串的容器。
         """,
     )

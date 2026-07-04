@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generic profile-driven C-to-Rust conversion harness entrypoint."""
+"""源码驱动的通用 C 到 Rust 转换入口。"""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ for path in (HARNESS, WORK):
 
 from generic_harness import ConversionContext, load_markdown_profile  # noqa: E402
 from model_artifacts import output_dir_name  # noqa: E402
+from profile_generator import build_dynamic_profile  # noqa: E402
 from profile_harness import run_profile_harness  # noqa: E402
 
 
@@ -25,45 +26,51 @@ def _resolve_path(root: Path, value: str) -> Path:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run a markdown-profile C-to-Rust conversion harness.")
-    parser.add_argument("--profile", default="work/profiles/flashdb.md", help="Markdown profile containing json harness-profile")
-    parser.add_argument("--source", default=None, help="Path to the source C project")
-    parser.add_argument("--out", default=None, help="Output Rust project directory")
-    parser.add_argument("--result", default="result", help="Result/report directory")
-    parser.add_argument("--logs", default="logs", help="Logs directory with interaction and trace artifacts")
-    parser.add_argument("--cargo", default="cargo", help="Cargo executable")
-    parser.add_argument("--skip-cargo", action="store_true", help="Skip cargo check/test even if cargo exists")
-    parser.add_argument("--strict", action="store_true", help="Return non-zero unless validation status is passed")
+    parser = argparse.ArgumentParser(description="运行源码动态 profile 驱动的 C 到 Rust 转换执行框架。")
+    parser.add_argument("--profile", default=None, help="可选 markdown 覆盖 profile；未提供时完全从 --source 动态生成")
+    parser.add_argument("--source", default=None, help="源 C 项目路径")
+    parser.add_argument("--out", default=None, help="Rust 输出项目目录")
+    parser.add_argument("--result", default="result", help="结果/报告目录")
+    parser.add_argument("--logs", default="logs", help="交互记录和 trace 产物日志目录")
+    parser.add_argument("--cargo", default="cargo", help="Cargo 可执行文件")
+    parser.add_argument("--skip-cargo", action="store_true", help="即使存在 cargo 也跳过 cargo check/test")
+    parser.add_argument("--strict", action="store_true", help="验证状态不是 passed 时返回非零")
     args = parser.parse_args()
 
     root = Path.cwd()
-    profile_path = _resolve_path(root, args.profile)
-    profile = load_markdown_profile(profile_path)
-    source = args.source or profile.get("default_source")
+    profile_path: Path | None = None
+    overrides = {}
+    if args.profile:
+        profile_path = _resolve_path(root, args.profile)
+        overrides = load_markdown_profile(profile_path)
+    source = args.source or overrides.get("default_source")
     if not source:
-        parser.error("--source is required when the profile has no default_source")
+        parser.error("未提供 --source，且覆盖 profile 没有 default_source")
+    source_path = _resolve_path(root, str(source))
+    profile = build_dynamic_profile(source_path, overrides)
     out = args.out or output_dir_name(profile)
     ctx = ConversionContext(
         root=root,
-        source=_resolve_path(root, str(source)),
+        source=source_path,
         out=_resolve_path(root, out),
         result=_resolve_path(root, args.result),
         logs=_resolve_path(root, args.logs),
         cargo=args.cargo,
         skip_cargo=args.skip_cargo,
-        profile=str(profile.get("profile", profile_path.stem)),
+        profile=str(profile.get("profile") or (profile_path.stem if profile_path else "project")),
     )
     run_profile_harness(ctx, profile)
     validation_status = ctx.validation_result.get("status", "unknown")
-    print(f"profile: {profile_path}")
-    print(f"source project: {ctx.source}")
-    print(f"generated Rust project: {ctx.out}")
-    print(f"harness artifacts: {ctx.result / 'harness'}")
-    print(f"log artifacts: {ctx.logs}")
-    print(f"validation: {ctx.result / 'harness' / '07-validation.json'}")
-    print(f"validation status: {validation_status}")
+    print(f"profile：{profile_path if profile_path else '动态生成'}")
+    print(f"源项目：{ctx.source}")
+    print(f"生成的 Rust 项目：{ctx.out}")
+    print(f"执行框架产物：{ctx.result / 'harness'}")
+    print(f"动态 profile：{ctx.result / 'harness' / '01-effective-profile.md'}")
+    print(f"日志产物：{ctx.logs}")
+    print(f"验证文件：{ctx.result / 'harness' / '07-validation.json'}")
+    print(f"验证状态：{validation_status}")
     if args.strict and validation_status != "passed":
-        print("strict validation failed", file=sys.stderr)
+        print("严格验证失败", file=sys.stderr)
         for failure in ctx.validation_result.get("failures", []):
             print(f"- {failure}", file=sys.stderr)
         return 1

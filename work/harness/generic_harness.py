@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Reusable primitives for deterministic conversion harnesses.
+"""确定性转换执行框架的通用基础组件。
 
-Project-specific harnesses should keep domain contracts, token checks, and
-translation generators outside this module.  This file owns only orchestration,
-artifact layout, trace logging, constraint loading, and command execution.
+项目领域合同、token 检查和生成约束应来自动态 profile 或可选覆盖文档。
+本文件只负责编排、产物布局、trace 记录、约束加载和命令执行。
 """
 
 from __future__ import annotations
@@ -155,11 +154,11 @@ class ConstraintLoadingAgent(Agent):
             return self.summary_markdown
         bullet_list = "\n".join(f"- `{path}`" for path in self.constraint_files)
         return f"""
-        # Constraint Loading
+        # 约束加载
 
-        The harness loaded the `{ctx.profile}` profile constraints before source analysis.
+        执行框架已在源码分析前加载 `{ctx.profile}` 的通用约束和可选覆盖项。
 
-        Required documents:
+        必读文档：
 
         {bullet_list}
         """
@@ -191,8 +190,8 @@ class RepairAgent(Agent):
             "notes": [],
         }
         if status == "failed":
-            repair["notes"].append("The deterministic generator produced code that cargo check rejected.")
-            repair["notes"].append("Inspect result/harness/05-compile.json for compiler diagnostics.")
+            repair["notes"].append("生成结果未通过 cargo check。")
+            repair["notes"].append("请查看 result/harness/05-compile.json 中的编译诊断。")
         write(ctx.artifact("06-repair.json"), json.dumps(repair, indent=2, ensure_ascii=False))
 
 

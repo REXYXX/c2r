@@ -1,88 +1,70 @@
-# Rust Design Rules
+# Rust 设计规则
 
-These rules are project-neutral constraints for model-guided C-to-Rust
-conversion. Project-specific APIs, module names, parity tokens, source mappings,
-and test matrices belong in the selected markdown profile.
+这些规则是项目无关的 C-to-Rust 模型生成约束。项目专属 API、模块名、parity token、
+源码映射和测试矩阵应由 harness 从 C 工程动态生成；markdown profile 只作为可选覆盖层。
 
-## Core Principles
+## 核心原则
 
-- Prefer safe, idiomatic Rust while preserving the source project's observable
-  semantics and ownership boundaries.
-- Keep the generated crate small enough to audit, but do not collapse unrelated
-  source subsystems into an opaque behaviour-only model.
-- Use explicit data structures for source-domain concepts instead of hiding all
-  state behind generic maps or vectors.
-- Keep public APIs stable once the profile has declared them.
-- Keep helper functions private unless the profile explicitly requires them to
-  be public.
-- Avoid global mutable state.
-- Do not use `unsafe` unless the profile explicitly permits it.
-- Do not use C FFI unless the profile explicitly permits it.
-- Do not add external dependencies unless the profile explicitly permits them.
+- 优先使用安全、惯用的 Rust，同时保留源项目可观察语义和所有权边界。
+- 生成的 crate 应该便于审计，但不要把无关子系统压缩成不透明的行为模型。
+- 对源领域概念使用显式数据结构，不要把所有状态隐藏在通用 map 或 vector 后面。
+- 动态 profile 声明的公共 API 一旦确定，不要随意漂移。
+- 除非动态 profile 明确要求公开，辅助函数应保持私有。
+- 避免全局可变状态。
+- 除非动态 profile 明确允许，不要使用 `unsafe`。
+- 除非动态 profile 明确允许，不要使用 C FFI。
+- 除非动态 profile 明确允许，不要新增外部依赖。
 
-## Error Handling
+## 错误处理
 
-- Return `Result` for I/O, parsing, corruption, overflow, and invalid-state
-  errors.
-- Return `Option` when absence is an expected lookup result.
-- Implement `From<std::io::Error>` for project error types when I/O is used.
-- Use stable, short parser error messages that identify the failed condition.
-- Do not use `unwrap`, `expect`, or `panic!` in library code for malformed input
-  or recoverable runtime errors.
-- Tests may use `unwrap` and `expect` for setup and assertions.
+- I/O、解析、数据损坏、溢出和非法状态错误应返回 `Result`。
+- 查询结果允许不存在时返回 `Option`。
+- 使用 I/O 时，项目错误类型应实现 `From<std::io::Error>`。
+- 解析错误信息应短小稳定，并指出失败条件。
+- 库代码不能因为畸形输入或可恢复运行时错误使用 `unwrap`、`expect` 或 `panic!`。
+- 测试代码可以在准备和断言中使用 `unwrap` 或 `expect`。
 
-## Binary And Text Parsing
+## 二进制与文本解析
 
-- Keep parser cursor state explicit.
-- Check bounds before slicing or indexing.
-- Use `checked_add`, `checked_mul`, or equivalent guards for offset arithmetic.
-- Validate trailing bytes when decoding fixed-format records.
-- Validate magic values, version fields, lengths, checksums, and status values
-  when the profile requires them.
-- Reject malformed input with errors instead of silently truncating or
-  defaulting data.
+- 显式维护解析游标状态。
+- 切片或索引前必须检查边界。
+- offset 运算使用 `checked_add`、`checked_mul` 或等价保护。
+- 解码固定格式记录时要校验尾部剩余字节。
+- 当动态 profile 或源码上下文要求时，校验 magic、版本、长度、checksum 和状态值。
+- 对畸形输入返回错误，不要静默截断或默认化数据。
 
-## Persistence
+## 持久化
 
-- Keep persistence format choices aligned with the source project and profile.
-- Create parent directories when writing persistent files.
-- Prefer write-to-temporary-file plus rename for whole-file persistence.
-- Flush or sync persistent state when the public API promises durability.
-- Do not invent a simplified persistence format when the profile requires a
-  source-compatible layout.
-- Keep read, write, erase, append, and recovery paths testable as separate
-  logic where the source project separates them.
+- 持久化格式应与源项目和动态 profile 保持一致。
+- 写入持久化文件时按需创建父目录。
+- whole-file 持久化优先使用临时文件写入后 rename。
+- 公共 API 承诺持久化时，应 flush 或 sync 状态。
+- 动态 profile 或源码上下文要求源码兼容布局时，不要发明简化持久化格式。
+- 如果源项目区分 read、write、erase、append、recovery 路径，Rust 代码也应让这些逻辑可单独测试。
 
-## Module Structure
+## 模块结构
 
-- Preserve module boundaries declared by the profile.
-- Put shared types, constants, errors, storage helpers, and domain logic in
-  separate modules when the profile declares separate outputs.
-- Avoid giant single-file implementations unless the profile explicitly asks for
-  one.
-- Keep generated code formatted by `rustfmt`.
-- Keep comments short and useful; explain non-obvious translations or invariants
-  rather than restating code.
+- 保留动态 profile 声明的模块边界。
+- 当动态 profile 声明多个输出模块时，共享类型、常量、错误、存储辅助和领域逻辑应拆分到相应模块。
+- 除非动态 profile 明确要求，不要生成巨大的单文件实现。
+- 生成代码应能通过 `rustfmt` 格式化。
+- 注释要短且有用，解释非显而易见的迁移关系或不变量，不要复述代码。
 
-## Tests
+## 测试
 
-- Translate every source test entry required by the profile.
-- Include regression tests for parser errors, boundary sizes, persistence,
-  iteration order, update/delete flows, and recovery paths when those behaviours
-  exist in the source project.
-- Benchmark-style tests should assert operation semantics, counts, and sane
-  measured result fields; they must not depend on fixed wall-clock thresholds.
-- Tests should create isolated temporary state and clean it up when practical.
+- 翻译动态 profile 要求的每一个源测试项。
+- 当源项目存在对应行为时，应包含解析错误、边界尺寸、持久化、迭代顺序、更新/删除流程和恢复路径的回归测试。
+- benchmark 风格测试应断言操作语义、操作数量和结果字段合理性，不应依赖固定墙钟耗时阈值。
+- 测试应创建隔离的临时状态，并在可行时清理。
 
-## Repair Rules
+## 修复规则
 
-When compile or tests fail:
+编译或测试失败时：
 
-1. Read the compiler or test failure literally.
-2. Change the smallest relevant file and function.
-3. Preserve public APIs declared by the profile.
-4. Preserve validation tokens and one-to-one feature checks declared by the
-   profile.
-5. Re-run `cargo check`.
-6. Re-run `cargo test`.
-7. Do not weaken profile checks to make a failing implementation pass.
+1. 逐字阅读编译器或测试失败信息。
+2. 只修改最小相关文件和函数。
+3. 保留 profile 声明的公共 API。
+4. 保留动态 profile 声明的 validation token 和覆盖检查。
+5. 重新运行 `cargo check`。
+6. 重新运行 `cargo test`。
+7. 不要为了让失败实现通过而削弱 profile 检查。
