@@ -3,9 +3,11 @@
 ## 0. 执行协议
 
 执行型编码模型必须先运行通用 harness，让框架根据 `--source` 动态生成
-`MODEL_TASK.md`、`01-effective-profile.md`、`03-context.json`、
-`04-function-parity.json`，再按这些产物编写 Rust。只有 Rust 代码写完后，
-才运行验证阶段生成 `07-validation.json`。
+`MODEL_TASK.md`、`TEST_AGENT_TASK.md`、`VALIDATION_AGENT_TASK.md`、
+`01-effective-profile.md`、`03-context.json`、`04-function-parity.json`。
+Code Agent 只实现 Rust 库代码；Rust 测试迁移必须交给 Test Agent；
+严格验证必须交给 Validation Agent。
+只有 Rust 代码和测试写完后，才运行验证阶段生成 `07-validation.json`。
 
 执行顺序必须通过 `logs/trace/` 中的 profile harness 路径产物审计：
 
@@ -22,7 +24,7 @@ python3 work/run_conversion.py \
 ```
 
 首次运行是 bootstrap 阶段，只生成动态 profile、上下文、parity 矩阵和
-`MODEL_TASK.md`，不会运行 `CompileStage`、`RepairStage`、`ValidationStage`。
+三份任务书，不会运行 `CompileStage`、`RepairStage`、`ValidationStage`。
 实现或修复完成后运行严格入口：
 
 开发示例：
@@ -42,12 +44,25 @@ python3 work/run_conversion.py \
 - 禁止跳过自动发现出的 benchmark 测试。
 - 禁止把 Rust 源码硬编码到 Python 文件中。
 - 禁止用 `--skip-cargo` 作为最终验证。
+- 禁止 Code Agent 在主上下文展开完整测试矩阵和验证日志；必须交给
+  Test Agent 和 Validation Agent 处理。
 
 ## 1. 设计原则
 
 本工程提供源码驱动的通用 HarnessStage 执行框架，而不是 FlashDB 专属转换脚本。
-Python 负责调度、trace、命令执行、源码实时分析、动态 profile 生成、模型任务书
+Python 负责调度、trace、命令执行、源码实时分析、动态 profile 生成、分工任务书
 和通用验证；Rust 业务实现必须由模型基于源码和生成产物编写。
+为适配有限上下文，Code Agent 只处理 `MODEL_TASK.md` 中的 Rust 实现任务；
+测试矩阵和 benchmark 细节由 Test Agent 读取 `TEST_AGENT_TASK.md` 处理；
+严格验证和压缩失败摘要由 Validation Agent 读取 `VALIDATION_AGENT_TASK.md` 处理。
+
+Agent 使用顺序必须固定：
+
+1. Code Agent 运行 bootstrap，读取 `MODEL_TASK.md`，实现 `Cargo.toml` 和 `src/*.rs`。
+2. Code Agent 必须调用 Test Agent，并把 `TEST_AGENT_TASK.md` 作为测试任务入口。
+3. Test Agent 生成或修复 `tests/*.rs`，只返回测试变更摘要和必要失败摘要。
+4. Code Agent 必须调用 Validation Agent，并把 `VALIDATION_AGENT_TASK.md` 作为验证任务入口。
+5. Validation Agent 运行 strict 验证，只返回压缩失败摘要；源码问题回到 Code Agent，测试问题回到 Test Agent。
 
 `work/profiles/flashdb.md` 只是可选覆盖层，当前仅保留展示名、crate 名和输出目录
 偏好。以下内容不再写在 `flashdb.md` 中，而是由 harness 从 C 工程实时生成：
@@ -94,7 +109,7 @@ Harness 分为 bootstrap 和 validation 两段，每个阶段都会向 `result/h
 4. `SkeletonGenerationStage`：准备 Cargo crate 外壳；不写 Rust 实现。
 5. `ContextBuilderStage`：生成模块上下文、函数线索和公共 API 索引。
 6. `ParityMatrixStage`：生成公共 API 与源码模块 parity 矩阵。
-7. `TranslationStage`：生成 `MODEL_TASK.md`，指导模型编写 Rust。
+7. `TranslationStage`：生成 Code Agent、Test Agent 和 Validation Agent 任务书。
 
 当传入 `--validate` 或 `--strict` 时，继续执行：
 
@@ -104,7 +119,7 @@ Harness 分为 bootstrap 和 validation 两段，每个阶段都会向 `result/h
     使用，并在 Cargo 可用时执行 `cargo test`。
 
 `profile_harness.py` 会把计划阶段、每个 HarnessStage 的开始/完成、源码扫描、
-动态 profile 推导、上下文索引、parity 矩阵、模型任务书和 profile 验证写入
+动态 profile 推导、上下文索引、parity 矩阵、分工任务书和 profile 验证写入
 `logs/trace/profile-harness-path.json` 与 `logs/trace/profile-harness-path.md`。
 bootstrap 阶段的 `planned_stages` 应只包含前 7 个 HarnessStage；严格验证阶段
 的 `planned_stages` 应包含 10 个 HarnessStage。判断模型是否按序执行时，以
@@ -113,10 +128,10 @@ bootstrap 阶段的 `planned_stages` 应只包含前 7 个 HarnessStage；严格
 代码分层：
 
 ```text
-work/harness/generic_harness.py      # 通用上下文、HarnessStage 基类、trace、约束加载、cargo 调度
+work/harness/generic_harness.py      # 通用上下文、HarnessStage 基类、约束加载、cargo 调度
 work/harness/profile_generator.py    # 从 C 工程动态生成 profile
 work/harness/profile_harness.py      # 源码分析、上下文、parity、translation brief 和 validation stages
-work/harness/model_artifacts.py      # scaffold、MODEL_TASK.md 和报告生成，不写 Rust 实现
+work/harness/model_artifacts.py      # scaffold、分工任务书和报告生成，不写 Rust 实现
 work/run_conversion.py               # 通用入口：--source + 可选 --profile
 work/profiles/flashdb.md             # FlashDB 可选覆盖项，不承载测试/API/benchmark 清单
 work/specs/rust_design_rules.md      # 项目无关 Rust 设计规则
@@ -134,7 +149,7 @@ work/specs/rust_design_rules.md      # 项目无关 Rust 设计规则
 FlashDB 中重复出现的 `test_fdb_tsl_clean` 必须被动态 profile 映射为两个独立
 Rust 测试名，避免后一个覆盖前一个。
 
-最终模型必须以 `MODEL_TASK.md` 中的 `required_rust_tests` 为准生成 Rust 测试。
+Test Agent 必须以 `TEST_AGENT_TASK.md` 中的 `required_rust_tests` 为准生成 Rust 测试。
 benchmark 测试应断言操作数量、结果字段和最终状态合理，不依赖固定墙钟耗时阈值。
 
 ## 5. 完成判定

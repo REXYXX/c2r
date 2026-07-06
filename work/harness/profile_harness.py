@@ -222,6 +222,35 @@ def _extract_function_names(text: str, prefixes: list[str]) -> list[str]:
     return sorted(set(names))
 
 
+def _extract_c_function_body(text: str, name: str) -> str:
+    pattern = rf"(?:^|\n)\s*(?:static\s+)?[A-Za-z_][\w\s\*]*\s+{re.escape(name)}\s*\([^;{{}}]*\)\s*\{{"
+    match = re.search(pattern, text, re.M)
+    if match is None:
+        return ""
+    return _extract_braced_body(text, match.end() - 1)
+
+
+def _extract_rust_function_body(text: str, name: str) -> str:
+    pattern = rf"(?:^|\n)\s*(?:#\[[^\]]+\]\s*)*(?:pub\s+)?fn\s+{re.escape(name)}\s*\([^;{{}}]*\)\s*\{{"
+    match = re.search(pattern, text, re.M)
+    if match is None:
+        return ""
+    return _extract_braced_body(text, match.end() - 1)
+
+
+def _extract_braced_body(text: str, open_brace: int) -> str:
+    depth = 0
+    for index in range(open_brace, len(text)):
+        char = text[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[open_brace + 1 : index]
+    return ""
+
+
 def _duplicate_lookup(profile: dict[str, Any]) -> dict[tuple[str, str, int], str]:
     return {
         (str(item["suite"]), str(item["source"]), int(item["occurrence"])): str(item["target"])
@@ -373,6 +402,7 @@ class ProfileProjectAnalysisStage(HarnessStage):
         readme_coverage = effective_profile.get("readme_test_coverage", {})
         required_rust_tests = readme_coverage.get("required_rust_tests", {})
         benchmark = readme_coverage.get("benchmark", {})
+        semantic_requirements = effective_profile.get("test_semantic_requirements", {})
         _record_profile_trace(
             ctx,
             self.name,
@@ -382,6 +412,7 @@ class ProfileProjectAnalysisStage(HarnessStage):
             test_suites=sorted(effective_profile.get("test_suites", {}).keys()),
             required_rust_tests={target: len(tests) for target, tests in required_rust_tests.items()},
             benchmark_tests=len(benchmark.get("operation_tests", [])) if isinstance(benchmark, dict) else 0,
+            semantic_test_requirements=sum(len(tests) for tests in semantic_requirements.values()),
             source_to_rust_modules=len(effective_profile.get("source_to_rust_modules", {})),
         )
         ctx.analysis = {
@@ -445,6 +476,7 @@ class ProfileProjectAnalysisStage(HarnessStage):
         benchmark_coverage = _derive_benchmark(source, profile_for_tests)
         readme_coverage = _merge_readme_coverage(readme_coverage, benchmark_coverage)
         c_api_parity = _group_public_apis(public_apis, self.profile)
+        test_semantic_requirements = self._derive_test_semantic_requirements(source, test_suites, profile_for_tests, public_apis)
         source_to_rust = {
             relative: _module_for_source(relative, self.profile)
             for relative in include_files + src_files
@@ -455,6 +487,7 @@ class ProfileProjectAnalysisStage(HarnessStage):
             "test_suites": test_suites,
             "duplicate_test_name_map": duplicate_test_name_map,
             "readme_test_coverage": readme_coverage,
+            "test_semantic_requirements": test_semantic_requirements,
             "c_api_parity_symbols": c_api_parity,
             "c_api_parity_modules": self._derive_c_api_parity_modules(source_to_rust, c_api_parity),
             "internal_parity_anchors": self._derive_internal_parity_anchors(source, src_files),
@@ -524,6 +557,110 @@ class ProfileProjectAnalysisStage(HarnessStage):
         for target in readme_coverage.get("required_rust_tests", {}):
             _append_unique(required, str(target))
         return required
+
+    def _derive_test_semantic_requirements(
+        self,
+        source: Path,
+        test_suites: dict[str, dict[str, str]],
+        profile: dict[str, Any],
+        public_apis: list[str],
+    ) -> dict[str, dict[str, Any]]:
+        requirements: dict[str, dict[str, Any]] = {}
+        pattern = _layout(profile).get("test_run_pattern")
+        duplicate_names = _duplicate_lookup(profile)
+        public_api_set = set(public_apis)
+        for suite, spec in test_suites.items():
+            relative = str(spec.get("source", ""))
+            target = str(spec.get("target", ""))
+            path = source / relative
+            text = read_text(path)
+            counts: dict[str, int] = {}
+            for raw_name in _test_runs_from_path(path, pattern):
+                counts[raw_name] = counts.get(raw_name, 0) + 1
+                rust_name = duplicate_names.get((suite, raw_name, counts[raw_name]), raw_name)
+                body = _extract_c_function_body(text, raw_name)
+                semantic = self._semantic_requirements_from_body(body, public_api_set)
+                if semantic:
+                    semantic["source"] = relative
+                    semantic["c_test"] = raw_name
+                    requirements.setdefault(target, {})[rust_name] = semantic
+        return requirements
+
+    def _semantic_requirements_from_body(self, body: str, public_api_set: set[str]) -> dict[str, Any]:
+        calls = self._calls_from_body(body)
+        assertions = self._assertion_expressions(body)
+        loop_headers = [match.group(0) for match in re.finditer(r"\b(?:for|while)\s*\([^{}]{0,240}\)", body)]
+        public_api_calls = sorted({name for name in calls if name in public_api_set})
+        assertion_fields = sorted({field for expression in assertions for field in self._field_tokens(expression)})
+        assertion_constants = sorted({token for expression in assertions for token in self._constant_tokens(expression)})
+        loop_tokens = sorted({token for header in loop_headers for token in self._constant_tokens(header)})
+        literals = self._representative_literals(body)
+        helper_calls = sorted(
+            {
+                name
+                for name in calls
+                if name not in public_api_set
+                and not name.startswith("test_assert")
+                and name not in CONTROL_KEYWORDS
+            }
+        )
+
+        if not (public_api_calls or assertion_fields or assertion_constants or loop_tokens or literals or helper_calls):
+            return {}
+
+        minimum_assertions = min(max(1, len(assertions) // 2), 8) if assertions else 0
+        static_validation = {
+            "required_api_calls": public_api_calls,
+            "required_assertion_fields": assertion_fields,
+            "required_assertion_constants": assertion_constants[:24],
+            "required_loop_tokens": loop_tokens[:16],
+            "required_representative_literals": literals[:16],
+            "minimum_assertions": minimum_assertions,
+            "requires_loop": bool(loop_headers),
+        }
+        observations = {
+            "public_api_calls": public_api_calls,
+            "assertion_count": len(assertions),
+            "assertion_fields": assertion_fields,
+            "assertion_constants": assertion_constants,
+            "loop_count": len(loop_headers),
+            "loop_headers": loop_headers,
+            "loop_tokens": loop_tokens,
+            "representative_literals": literals,
+            "helper_calls": helper_calls,
+        }
+        return {
+            "requirements": [
+                "根据 C 测试源码实时抽取：Rust 测试必须覆盖相同的公开 API 调用、断言状态字段、常量/循环规模和代表性测试数据。"
+            ],
+            "source_observations": observations,
+            "static_validation": static_validation,
+        }
+
+    def _calls_from_body(self, body: str) -> list[str]:
+        return [
+            name
+            for name in re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(", body)
+            if name not in CONTROL_KEYWORDS and name not in {"sizeof", "defined"}
+        ]
+
+    def _assertion_expressions(self, body: str) -> list[str]:
+        return re.findall(r"\b(?:test_assert[A-Za-z0-9_]*|assert)\s*\((.*?)\)\s*;", body, re.S)
+
+    def _field_tokens(self, text: str) -> list[str]:
+        return sorted(set(re.findall(r"(?:->|\.)\s*([A-Za-z_][A-Za-z0-9_]*)", text)))
+
+    def _constant_tokens(self, text: str) -> list[str]:
+        return sorted(set(re.findall(r"\b[A-Z][A-Z0-9_]{2,}\b", text)))
+
+    def _representative_literals(self, body: str) -> list[str]:
+        literals = []
+        for value in re.findall(r'"([^"\n]{1,64})"', body):
+            if "%" in value or not re.search(r"[A-Za-z0-9]", value):
+                continue
+            if re.fullmatch(r"[A-Za-z0-9_./:-]+", value):
+                _append_unique(literals, value)
+        return literals[:32]
 
     def _derive_api_symbols(self, source_to_rust: dict[str, list[str]]) -> dict[str, list[str]]:
         modules = sorted({Path(module).stem for values in source_to_rust.values() for module in values if module.startswith("src/")})
@@ -676,7 +813,7 @@ class ProfileSkeletonGenerationStage(HarnessStage):
             "generate_workspace_scaffold",
             crate_name=effective.get("crate_name"),
             out=str(ctx.out),
-            outputs=["Cargo.toml", "src/lib.rs", "MODEL_TASK.md"],
+            outputs=["Cargo.toml", "src/", "tests/"],
         )
 
 
@@ -798,23 +935,30 @@ class ProfileTranslationStage(HarnessStage):
             f"""
             # 模型引导翻译
 
-            执行框架已输出面向模型的生成指引，而不是从 Python 写入 Rust 实现。
+            执行框架已输出面向 Code Agent、Test Agent 和 Validation Agent
+            的生成指引，而不是从 Python 写入 Rust 实现。
 
-            - 工作项：`{ctx.out / "MODEL_TASK.md"}`
-            - 执行框架任务书：`{ctx.result / "harness" / "04-model-generation-brief.md"}`
+            - Code Agent 实现任务：`{ctx.out / "MODEL_TASK.md"}`
+            - Test Agent 测试任务：`{ctx.out / "TEST_AGENT_TASK.md"}`
+            - Validation Agent 验证任务：`{ctx.out / "VALIDATION_AGENT_TASK.md"}`
+            - 执行框架主任务书：`{ctx.result / "harness" / "04-model-generation-brief.md"}`
             - parity 矩阵：`{ctx.result / "harness" / "04-function-parity.json"}`
 
-            模型必须在 `{ctx.out}` 下编写或修复 Rust crate。
-            验证失败项会保留为下一轮生成修复反馈。
+            Code Agent 实现 `src/*.rs`；Test Agent 生成 `tests/*.rs`；
+            Validation Agent 运行 strict 验证并返回压缩失败摘要。
             """,
         )
         _record_profile_trace(
             ctx,
             self.name,
-            "generate_model_brief",
+            "generate_model_and_subagent_briefs",
             outputs=[
                 "out/MODEL_TASK.md",
+                "out/TEST_AGENT_TASK.md",
+                "out/VALIDATION_AGENT_TASK.md",
                 "result/harness/04-model-generation-brief.md",
+                "result/harness/04-test-agent-task.md",
+                "result/harness/04-validation-agent-task.md",
                 "result/harness/04-translation.md",
                 "result/harness/04-function-parity.json",
             ],
@@ -844,6 +988,7 @@ class ProfileValidationStage(HarnessStage):
             "behaviour_model_rejection": self._check_behaviour_model_rejection(ctx.out, effective),
             "translated_test_coverage": self._check_translated_test_coverage(ctx),
             "readme_test_coverage": self._check_readme_test_coverage(ctx.out, effective),
+            "test_semantic_requirements": self._check_test_semantic_requirements(ctx.out, effective),
             "unsafe_occurrences": count_token_in_rust(ctx.out, "unsafe") if effective.get("disallow_unsafe", True) else 0,
         }
         if ctx.skip_cargo or cargo_path is None:
@@ -955,6 +1100,54 @@ class ProfileValidationStage(HarnessStage):
             result["missing"][relative] = [name for name in expected if name not in actual]
         return result
 
+    def _check_test_semantic_requirements(self, out: Path, profile: dict[str, Any]) -> dict[str, Any]:
+        requirements = profile.get("test_semantic_requirements", {})
+        result: dict[str, Any] = {}
+        for relative, tests in requirements.items():
+            text = read_text(out / relative)
+            test_results: dict[str, Any] = {}
+            for test_name, spec in tests.items():
+                body = _extract_rust_function_body(text, str(test_name))
+                validation = spec.get("static_validation", {})
+                required_api_calls = [str(token) for token in validation.get("required_api_calls", [])]
+                required_fields = [str(token) for token in validation.get("required_assertion_fields", [])]
+                required_constants = [str(token) for token in validation.get("required_assertion_constants", [])]
+                required_loop_tokens = [str(token) for token in validation.get("required_loop_tokens", [])]
+                required_literals = [str(token) for token in validation.get("required_representative_literals", [])]
+                assertion_count = len(re.findall(r"\bassert(?:_eq|_ne)?!|\bassert\s*\(", body))
+                minimum_assertions = int(validation.get("minimum_assertions", 0) or 0)
+                has_loop = bool(re.search(r"\b(?:for|while|loop)\b|\.for_each\s*\(", body))
+                missing_api_calls = [token for token in required_api_calls if token not in body]
+                missing_fields = [token for token in required_fields if token not in body]
+                missing_constants = [token for token in required_constants if token not in body]
+                missing_loop_tokens = [token for token in required_loop_tokens if token not in body]
+                missing_literals = [token for token in required_literals if token not in body]
+                test_results[str(test_name)] = {
+                    "ok": (
+                        bool(body)
+                        and not missing_api_calls
+                        and not missing_fields
+                        and not missing_constants
+                        and not missing_loop_tokens
+                        and not missing_literals
+                        and assertion_count >= minimum_assertions
+                        and (has_loop or not validation.get("requires_loop", False))
+                    ),
+                    "has_body": bool(body),
+                    "missing_api_calls": missing_api_calls,
+                    "missing_assertion_fields": missing_fields,
+                    "missing_assertion_constants": missing_constants,
+                    "missing_loop_tokens": missing_loop_tokens,
+                    "missing_representative_literals": missing_literals,
+                    "assertion_count": assertion_count,
+                    "minimum_assertions": minimum_assertions,
+                    "has_loop": has_loop,
+                    "requires_loop": bool(validation.get("requires_loop", False)),
+                    "requirements": spec.get("requirements", []),
+                }
+            result[str(relative)] = test_results
+        return result
+
     def _expected_rust_test_names(self, source_runs: list[str], suite: str, profile: dict[str, Any]) -> list[str]:
         duplicate_test_name_map = _duplicate_lookup(profile)
         counts: dict[str, int] = {}
@@ -1010,6 +1203,30 @@ class ProfileValidationStage(HarnessStage):
         for path, missing in checks.get("readme_test_coverage", {}).get("missing", {}).items():
             if missing:
                 failures.append(f"missing README/benchmark coverage in {path}: {', '.join(missing)}")
+        for path, tests in checks.get("test_semantic_requirements", {}).items():
+            for name, result in tests.items():
+                if result.get("ok", False):
+                    continue
+                problems = []
+                if not result.get("has_body", False):
+                    problems.append("missing test body")
+                if result.get("missing_api_calls"):
+                    problems.append("missing C API calls: " + ", ".join(result["missing_api_calls"]))
+                if result.get("missing_assertion_fields"):
+                    problems.append("missing assertion fields: " + ", ".join(result["missing_assertion_fields"]))
+                if result.get("missing_assertion_constants"):
+                    problems.append("missing assertion constants: " + ", ".join(result["missing_assertion_constants"]))
+                if result.get("missing_loop_tokens"):
+                    problems.append("missing loop tokens: " + ", ".join(result["missing_loop_tokens"]))
+                if result.get("missing_representative_literals"):
+                    problems.append("missing representative literals: " + ", ".join(result["missing_representative_literals"]))
+                if int(result.get("assertion_count", 0) or 0) < int(result.get("minimum_assertions", 0) or 0):
+                    problems.append(
+                        f"assertions {result.get('assertion_count', 0)} < {result.get('minimum_assertions', 0)}"
+                    )
+                if result.get("requires_loop") and not result.get("has_loop"):
+                    problems.append("missing loop/batch structure")
+                failures.append(f"missing semantic coverage in {path}::{name}: {'; '.join(problems)}")
         if checks.get("unsafe_occurrences", 0) != 0:
             failures.append(f"unsafe occurrences must be 0, got {checks['unsafe_occurrences']}")
         if cargo_test.get("status") == "failed":
@@ -1039,7 +1256,7 @@ class ProfileValidationStage(HarnessStage):
             - SkeletonGenerationStage：准备 Cargo crate 布局。
             - ContextBuilderStage：生成模块/函数上下文。
             - ParityMatrixStage：生成 profile 提供的 parity 矩阵。
-            - TranslationStage：生成面向模型的 Rust 生成任务。
+            - TranslationStage：生成 Code Agent、Test Agent 和 Validation Agent 任务书。
             - CompileStage：Cargo 可用时记录 `cargo check` 诊断。
             - RepairStage：整理编译结果和修复判断。
             - ValidationStage：执行 profile 驱动的验证门禁。

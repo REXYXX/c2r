@@ -8,6 +8,7 @@ logs/*
 !logs/
 !logs/interaction.md
 !logs/trace/
+logs/trace/*
 !logs/trace/.gitkeep
 flashDB_rust/
 
