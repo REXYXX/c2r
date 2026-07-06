@@ -4,7 +4,8 @@
 
 执行型编码模型必须先运行通用 harness，让框架根据 `--source` 动态生成
 `MODEL_TASK.md`、`TEST_AGENT_TASK.md`、`VALIDATION_AGENT_TASK.md`、
-`01-effective-profile.md`、`03-context.json`、`04-function-parity.json`。
+`code-manifest.json`、`context/manifest.json`、`test-requirements/manifest.json`
+和 `04-function-parity.json`。
 Code Agent 只实现 Rust 库代码；Rust 测试迁移必须交给 Test Agent；
 严格验证必须交给 Validation Agent。
 只有 Rust 代码和测试写完后，才运行验证阶段生成 `07-validation.json`。
@@ -46,23 +47,29 @@ python3 work/run_conversion.py \
 - 禁止用 `--skip-cargo` 作为最终验证。
 - 禁止 Code Agent 在主上下文展开完整测试矩阵和验证日志；必须交给
   Test Agent 和 Validation Agent 处理。
+- 禁止 agent 一次性读取 `result/harness/01-analysis.json`、
+  `result/harness/01-effective-profile.json` 或完整测试语义矩阵。
 
 ## 1. 设计原则
 
 本工程提供源码驱动的通用 HarnessStage 执行框架，而不是 FlashDB 专属转换脚本。
 Python 负责调度、trace、命令执行、源码实时分析、动态 profile 生成、分工任务书
 和通用验证；Rust 业务实现必须由模型基于源码和生成产物编写。
-为适配有限上下文，Code Agent 只处理 `MODEL_TASK.md` 中的 Rust 实现任务；
-测试矩阵和 benchmark 细节由 Test Agent 读取 `TEST_AGENT_TASK.md` 处理；
+为适配有限上下文，Code Agent 只处理 `MODEL_TASK.md` 与
+`result/harness/code-manifest.json` 中的 Rust 实现任务；
+测试矩阵和 benchmark 细节由 Test Agent 读取 `TEST_AGENT_TASK.md` 与
+`result/harness/test-requirements/manifest.json` 后按 shard 处理；
 严格验证和压缩失败摘要由 Validation Agent 读取 `VALIDATION_AGENT_TASK.md` 处理。
 
 Agent 使用顺序必须固定：
 
-1. Code Agent 运行 bootstrap，读取 `MODEL_TASK.md`，实现 `Cargo.toml` 和 `src/*.rs`。
-2. Code Agent 必须调用 Test Agent，并把 `TEST_AGENT_TASK.md` 作为测试任务入口。
-3. Test Agent 生成或修复 `tests/*.rs`，只返回测试变更摘要和必要失败摘要。
-4. Code Agent 必须调用 Validation Agent，并把 `VALIDATION_AGENT_TASK.md` 作为验证任务入口。
-5. Validation Agent 运行 strict 验证，只返回压缩失败摘要；源码问题回到 Code Agent，测试问题回到 Test Agent。
+1. Code Agent 运行 bootstrap，读取 `MODEL_TASK.md` 与 `code-manifest.json`，实现 `Cargo.toml` 和 `src/*.rs`。
+2. Code Agent 实现某个模块时，只读取 `context/manifest.json` 中对应模块 shard。
+3. Code Agent 必须调用 Test Agent，并把 `TEST_AGENT_TASK.md` 作为测试任务入口。
+4. Test Agent 读取 `test-requirements/manifest.json`，一次只处理一个 target manifest 和必要 semantic shard。
+5. Test Agent 生成或修复 `tests/*.rs`，只返回测试变更摘要和必要失败摘要。
+6. Code Agent 必须调用 Validation Agent，并把 `VALIDATION_AGENT_TASK.md` 作为验证任务入口。
+7. Validation Agent 运行 strict 验证，只返回压缩失败摘要；源码问题回到 Code Agent，测试问题回到 Test Agent。
 
 `work/profiles/flashdb.md` 只是可选覆盖层，当前仅保留展示名、crate 名和输出目录
 偏好。以下内容不再写在 `flashdb.md` 中，而是由 harness 从 C 工程实时生成：
@@ -82,7 +89,14 @@ Agent 使用顺序必须固定：
 result/harness/01-derived-profile.json
 result/harness/01-effective-profile.json
 result/harness/01-effective-profile.md
+result/harness/code-manifest.json
+result/harness/context/manifest.json
+result/harness/test-requirements/manifest.json
 ```
+
+其中 `01-*` 文件只用于机器审计和人工调试。Agent 正常执行时必须从
+`code-manifest.json`、`context/manifest.json` 和
+`test-requirements/manifest.json` 进入，按需读取 shard。
 
 ## 2. 参数说明
 
@@ -107,7 +121,7 @@ Harness 分为 bootstrap 和 validation 两段，每个阶段都会向 `result/h
 2. `ConstraintLoadingStage`：加载通用 Rust 设计规则和可选 profile 覆盖项。
 3. `ProjectAnalysisStage`：扫描 C 源码并生成 derived/effective profile。
 4. `SkeletonGenerationStage`：准备 Cargo crate 外壳；不写 Rust 实现。
-5. `ContextBuilderStage`：生成模块上下文、函数线索和公共 API 索引。
+5. `ContextBuilderStage`：生成按模块拆分的上下文 shard 和 compact 索引。
 6. `ParityMatrixStage`：生成公共 API 与源码模块 parity 矩阵。
 7. `TranslationStage`：生成 Code Agent、Test Agent 和 Validation Agent 任务书。
 
@@ -149,7 +163,8 @@ work/specs/rust_design_rules.md      # 项目无关 Rust 设计规则
 FlashDB 中重复出现的 `test_fdb_tsl_clean` 必须被动态 profile 映射为两个独立
 Rust 测试名，避免后一个覆盖前一个。
 
-Test Agent 必须以 `TEST_AGENT_TASK.md` 中的 `required_rust_tests` 为准生成 Rust 测试。
+Test Agent 必须以 `result/harness/test-requirements/manifest.json` 指向的
+target manifest 中的 `required_rust_tests` 为准生成 Rust 测试。
 benchmark 测试应断言操作数量、结果字段和最终状态合理，不依赖固定墙钟耗时阈值。
 
 ## 5. 完成判定

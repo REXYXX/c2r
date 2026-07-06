@@ -33,6 +33,15 @@ def list_relative(root: Path, subdir: str) -> list[str]:
     return sorted(str(p.relative_to(root)).replace(os.sep, "/") for p in base.rglob("*") if p.is_file())
 
 
+def slug(value: str) -> str:
+    name = "".join(ch.lower() if ch.isalnum() else "_" for ch in value)
+    return "_".join(part for part in name.split("_") if part) or "item"
+
+
+def write_json(path: Path, value: Any) -> None:
+    write(path, json.dumps(value, indent=2, ensure_ascii=False))
+
+
 def profile_name(profile: dict[str, Any]) -> str:
     return str(profile.get("profile") or profile.get("name") or "project")
 
@@ -93,6 +102,182 @@ def generate_workspace_scaffold(out: Path, profile: dict[str, Any] | None = None
     )
 
 
+def write_context_shards(result: Path, context_index: dict[str, Any]) -> dict[str, Any]:
+    base = result / "harness" / "context"
+    module_contexts = context_index.get("module_contexts", {}) or {}
+    function_hints = context_index.get("function_hints", []) or []
+    public_apis = context_index.get("public_apis", []) or []
+    internal_anchors = context_index.get("internal_parity_anchors", {}) or {}
+    manifest: dict[str, Any] = {
+        "description": "按模块拆分的 Code Agent 上下文索引；不要一次性读取完整 03-context.json。",
+        "modules": {},
+        "global": {
+            "public_apis": "result/harness/context/public-apis.json",
+            "internal_parity_anchors": "result/harness/context/internal-parity-anchors.json",
+        },
+    }
+    for module, spec in sorted(module_contexts.items()):
+        module_slug = slug(str(module))
+        source_hints = [str(item) for item in spec.get("source_hints", [])]
+        source_set = set(source_hints)
+        shard_hints = [item for item in function_hints if str(item.get("file", "")) in source_set]
+        shard = {
+            "module": module,
+            "target": spec.get("target"),
+            "source_hints": source_hints,
+            "required_mechanisms": spec.get("required_mechanisms", []),
+            "function_hints": shard_hints,
+            "internal_parity_anchors": {
+                key: value for key, value in internal_anchors.items() if key in source_set
+            },
+        }
+        shard_relative = f"result/harness/context/{module_slug}.json"
+        write_json(base / f"{module_slug}.json", shard)
+        manifest["modules"][str(module)] = {
+            "target": spec.get("target"),
+            "shard": shard_relative,
+            "source_hints": len(source_hints),
+            "function_hints": len(shard_hints),
+        }
+    write_json(base / "public-apis.json", {"public_apis": public_apis})
+    write_json(base / "internal-parity-anchors.json", internal_anchors)
+    write_json(base / "manifest.json", manifest)
+    return manifest
+
+
+def compact_context_index(context_index: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "description": "完整上下文已拆分到 result/harness/context/；Code Agent 只按模块读取 shard。",
+        "manifest": "result/harness/context/manifest.json",
+        "module_count": len((context_index.get("module_contexts", {}) or {})),
+        "function_hint_count": len((context_index.get("function_hints", []) or [])),
+        "public_api_count": len((context_index.get("public_apis", []) or [])),
+        "internal_anchor_group_count": len((context_index.get("internal_parity_anchors", {}) or {})),
+        "modules": manifest.get("modules", {}),
+    }
+
+
+def write_test_requirement_shards(
+    result: Path,
+    profile: dict[str, Any],
+    analysis: dict[str, Any],
+) -> dict[str, Any]:
+    base = result / "harness" / "test-requirements"
+    readme_coverage = profile.get("readme_test_coverage", {}) or {}
+    required_rust_tests = readme_coverage.get("required_rust_tests", {}) or {}
+    benchmark = readme_coverage.get("benchmark", {}) if isinstance(readme_coverage, dict) else {}
+    if not isinstance(benchmark, dict):
+        benchmark = {}
+    semantic_requirements = profile.get("test_semantic_requirements", {}) or {}
+    test_suites = profile.get("test_suites", {}) or {}
+    source_runs = analysis.get("source_test_runs", {}) or {}
+    targets = sorted(
+        set(required_rust_tests)
+        | set(semantic_requirements)
+        | {str(spec.get("target")) for spec in test_suites.values() if spec.get("target")}
+    )
+    manifest: dict[str, Any] = {
+        "description": "Test Agent 入口索引；按目标测试文件读取 target manifest，再按单个测试读取 semantic shard。",
+        "rules": [
+            "不要一次性读取 result/harness/01-effective-profile.json 或 01-analysis.json。",
+            "不要把所有 semantic shard 同时展开到同一个上下文。",
+            "每次只处理一个 tests/*.rs 目标文件；必要时每次只读取一个测试用例 shard。",
+        ],
+        "targets": {},
+    }
+    for target in targets:
+        target_slug = slug(target)
+        target_dir = base / target_slug
+        target_semantics = semantic_requirements.get(target, {}) or {}
+        semantic_index: dict[str, Any] = {}
+        for test_name, spec in sorted(target_semantics.items()):
+            test_slug = slug(str(test_name))
+            shard_relative = f"result/harness/test-requirements/{target_slug}/{test_slug}.json"
+            write_json(
+                target_dir / f"{test_slug}.json",
+                {
+                    "target": target,
+                    "test": test_name,
+                    "semantic_requirement": spec,
+                },
+            )
+            observations = spec.get("source_observations", {}) if isinstance(spec, dict) else {}
+            semantic_index[str(test_name)] = {
+                "shard": shard_relative,
+                "public_api_calls": len(observations.get("public_api_calls", []) or []),
+                "assertion_count": observations.get("assertion_count", 0),
+                "loop_count": observations.get("loop_count", 0),
+                "representative_literals": len(observations.get("representative_literals", []) or []),
+            }
+        suites = {
+            suite: {
+                "source": spec.get("source"),
+                "target": spec.get("target"),
+                "source_runs": source_runs.get(suite, []),
+            }
+            for suite, spec in sorted(test_suites.items())
+            if spec.get("target") == target
+        }
+        target_manifest: dict[str, Any] = {
+            "target": target,
+            "suites": suites,
+            "required_rust_tests": required_rust_tests.get(target, []),
+            "semantic_requirements_index": semantic_index,
+            "rules": [
+                "先用 required_rust_tests 建立完整 #[test] 清单。",
+                "对每个测试读取对应 semantic shard，覆盖 C 源测试抽取出的 API、断言、循环规模和代表性数据。",
+                "同名空壳测试或只覆盖 happy path 不合格。",
+            ],
+        }
+        if isinstance(benchmark, dict) and benchmark.get("rust_target") == target:
+            target_manifest["benchmark"] = benchmark
+        target_manifest_relative = f"result/harness/test-requirements/{target_slug}.json"
+        write_json(base / f"{target_slug}.json", target_manifest)
+        manifest["targets"][target] = {
+            "manifest": target_manifest_relative,
+            "required_tests": len(required_rust_tests.get(target, []) or []),
+            "semantic_tests": len(semantic_index),
+            "benchmark_tests": len(benchmark.get("operation_tests", []) or [])
+            if isinstance(benchmark, dict) and benchmark.get("rust_target") == target
+            else 0,
+        }
+    write_json(base / "manifest.json", manifest)
+    return manifest
+
+
+def write_code_manifest(
+    result: Path,
+    implementation_files: list[str],
+    test_files: list[str],
+    profile: dict[str, Any],
+    context_manifest: dict[str, Any],
+) -> dict[str, Any]:
+    manifest = {
+        "description": "Code Agent 最小实现入口；按模块读取 context shard，不读取完整测试矩阵。",
+        "implementation_files": implementation_files,
+        "test_files": test_files,
+        "source_to_rust_modules": profile.get("source_to_rust_modules", {}),
+        "api_symbols": profile.get("api_symbols", {}),
+        "one_to_one_features": profile.get("one_to_one_features", {}),
+        "behaviour_model_rejection": profile.get("behaviour_model_rejection", {}),
+        "context_manifest": "result/harness/context/manifest.json",
+        "context_modules": context_manifest.get("modules", {}),
+        "parity_matrix": "result/harness/04-function-parity.json",
+        "rules": [
+            "只实现 Cargo.toml 和 src/*.rs。",
+            "不要读取完整测试矩阵；测试交给 Test Agent。",
+            "实现某个 src/*.rs 前，只读取对应 context shard 和必要 C 源文件。",
+        ],
+    }
+    write_json(result / "harness" / "code-manifest.json", manifest)
+    return {
+        "path": "result/harness/code-manifest.json",
+        "implementation_files": len(implementation_files),
+        "context_modules": len(context_manifest.get("modules", {})),
+        "parity_matrix": "result/harness/04-function-parity.json",
+    }
+
+
 def generate_model_brief(
     root: Path,
     source: Path,
@@ -111,10 +296,6 @@ def generate_model_brief(
     implementation_files = [path for path in required_files if not path.startswith("tests/")]
     test_files = [path for path in required_files if path.startswith("tests/")]
     constraint_files = profile.get("constraint_files", [])
-    one_to_one = profile.get("one_to_one_features", {})
-    rejection = profile.get("behaviour_model_rejection", {})
-    c_api = profile.get("c_api_parity_symbols", {})
-    source_to_rust = profile.get("source_to_rust_modules", {})
     readme_coverage = profile.get("readme_test_coverage", {}) or {}
     source_runs = analysis.get("source_test_runs", {})
     test_semantic_requirements = profile.get("test_semantic_requirements", {}) or {}
@@ -130,6 +311,8 @@ def generate_model_brief(
 
     required_rust_tests = readme_coverage.get("required_rust_tests", {})
     benchmark = readme_coverage.get("benchmark", {}) if isinstance(readme_coverage, dict) else {}
+    if not isinstance(benchmark, dict):
+        benchmark = {}
     context_summary = {
         "module_contexts": len(context_index.get("module_contexts", {})),
         "function_hints": len(context_index.get("function_hints", [])),
@@ -141,6 +324,35 @@ def generate_model_brief(
         "required_rust_tests": {target: len(tests) for target, tests in required_rust_tests.items()},
         "benchmark_tests": len(benchmark.get("operation_tests", [])) if isinstance(benchmark, dict) else 0,
         "semantic_test_requirements": sum(len(tests) for tests in test_semantic_requirements.values()),
+    }
+    context_manifest = {
+        "modules": {
+            str(name): {
+                "target": spec.get("target"),
+                "shard": f"result/harness/context/{slug(str(name))}.json",
+            }
+            for name, spec in sorted((context_index.get("module_contexts", {}) or {}).items())
+        }
+    }
+    code_manifest_summary = write_code_manifest(
+        result,
+        implementation_files,
+        test_files,
+        profile,
+        context_manifest,
+    )
+    test_requirement_manifest = write_test_requirement_shards(result, profile, analysis)
+    test_requirement_summary = {
+        "manifest": "result/harness/test-requirements/manifest.json",
+        "targets": {
+            target: {
+                "manifest": spec.get("manifest"),
+                "required_tests": spec.get("required_tests", 0),
+                "semantic_tests": spec.get("semantic_tests", 0),
+                "benchmark_tests": spec.get("benchmark_tests", 0),
+            }
+            for target, spec in test_requirement_manifest.get("targets", {}).items()
+        },
     }
 
     brief = "\n".join(
@@ -176,19 +388,24 @@ def generate_model_brief(
             "",
             "## 生成产物索引",
             "",
-            f"- effective profile: `{result / 'harness' / '01-effective-profile.md'}`",
-            f"- context index: `{result / 'harness' / '03-context.json'}`",
+            f"- Code Agent manifest：`{result / 'harness' / 'code-manifest.json'}`",
+            f"- context manifest：`{result / 'harness' / 'context' / 'manifest.json'}`",
             f"- parity matrix: `{result / 'harness' / '04-function-parity.json'}`",
             f"- Test Agent 任务书：`{out / 'TEST_AGENT_TASK.md'}`",
             f"- Validation Agent 任务书：`{out / 'VALIDATION_AGENT_TASK.md'}`",
+            "",
+            "不要读取 `01-analysis.json`、`01-effective-profile.json` 或完整 `03-context.json`；",
+            "这些文件只用于机器审计和调试。",
             "",
             "## 必读约束文档",
             "",
             bullets(constraint_files),
             "",
-            "## Code Agent 必需实现文件",
+            "## Code Agent Manifest",
             "",
-            bullets(implementation_files),
+            "```json",
+            json_block(code_manifest_summary),
+            "```",
             "",
             "## 测试与 benchmark 摘要",
             "",
@@ -198,33 +415,9 @@ def generate_model_brief(
             json_block(test_summary),
             "```",
             "",
-            "## 源码到 Rust 模块映射",
-            "",
-            "```json",
-            json_block(source_to_rust),
-            "```",
-            "",
-            "## 公共 C API 等价 token",
-            "",
-            "```json",
-            json_block(c_api),
-            "```",
-            "",
-            "## 附加逻辑覆盖检查",
-            "",
-            "```json",
-            json_block(one_to_one),
-            "```",
-            "",
-            "## 快捷实现拦截规则",
-            "",
-            "```json",
-            json_block(rejection),
-            "```",
-            "",
             "## 上下文索引摘要",
             "",
-            "Code Agent 按模块需要读取 `03-context.json` 的局部内容，不要一次性展开全部函数线索。",
+            "Code Agent 按模块读取 `result/harness/context/manifest.json` 中指向的 shard。",
             "",
             "```json",
             json_block(context_summary),
@@ -233,7 +426,8 @@ def generate_model_brief(
             "## 工作规则",
             "",
             f"- 直接在 `{out}` 中编写 Rust 源码；不要把 Rust 源码写进 Python。",
-            "- 保留源码到 Rust 模块映射声明的模块边界。",
+            "- 从 `code-manifest.json` 读取模块边界、API token 和快捷实现拦截规则。",
+            "- 实现某个模块时，只读取对应 context shard 和必要 C 源文件。",
             "- 仅使用安全 Rust；除非动态 profile 明确允许，不要使用 C FFI。",
             "- Code Agent 完成库实现后，必须交给 Test Agent 生成 `tests/*.rs`。",
             "- Test Agent 完成后，必须交给 Validation Agent 运行 strict 验证。",
@@ -264,36 +458,26 @@ def generate_model_brief(
             "",
             bullets(test_files),
             "",
-            "## 源码测试运行矩阵",
+            "## 测试 Requirement Manifest",
+            "",
+            f"- 根索引：`{result / 'harness' / 'test-requirements' / 'manifest.json'}`",
+            "- 先读取根索引，再按目标测试文件读取 target manifest。",
+            "- 每个测试的深层语义只读取对应 semantic shard，不要一次性展开全部 shard。",
             "",
             "```json",
-            json_block(source_runs),
+            json_block(test_requirement_summary),
             "```",
             "",
-            "## README 与 benchmark 覆盖矩阵",
+            "## C 测试语义覆盖方式",
             "",
-            "必须迁移动态 profile 声明的每个单元测试和 benchmark 项。",
-            "benchmark 用例应校验操作语义、操作数量和测量结果字段是否合理；",
-            "不要依赖固定墙钟耗时阈值。",
-            "",
-            "```json",
-            json_block(readme_coverage),
-            "```",
-            "",
-            "## C 测试语义覆盖要求",
-            "",
-            "同名 Rust 测试不够；下面这些条目由 C 测试函数实时抽取。",
-            "Test Agent 必须覆盖其中的公开 API 调用、断言字段、常量/循环规模、",
-            "辅助函数调用和代表性测试数据。",
-            "",
-            "```json",
-            json_block(test_semantic_requirements),
-            "```",
+            "同名 Rust 测试不够；semantic shard 由 C 测试函数实时抽取。",
+            "Test Agent 必须逐个 shard 覆盖其中的公开 API 调用、断言字段、",
+            "常量/循环规模、辅助函数调用和代表性测试数据。",
             "",
             "## 测试工作规则",
             "",
-            "- 按 `required_rust_tests` 逐项创建 Rust `#[test]`。",
-            "- 按 `test_semantic_requirements` 覆盖每个 Rust 测试的深层行为；不能只保留同名空壳或浅层 happy path。",
+            "- 按 target manifest 中的 `required_rust_tests` 逐项创建 Rust `#[test]`。",
+            "- 按每个测试的 semantic shard 覆盖深层行为；不能只保留同名空壳或浅层 happy path。",
             "- 对重复 C 测试名使用动态 profile 已生成的唯一 Rust 测试名。",
             "- 每个测试使用隔离临时状态，避免测试间共享全局状态。",
             "- benchmark 风格测试只验证语义和结果结构，不把墙钟耗时作为稳定断言。",

@@ -32,11 +32,13 @@ from generic_harness import (
     write,
 )
 from model_artifacts import (
+    compact_context_index,
     display_name,
     generate_model_brief,
     generate_report,
     generate_workspace_scaffold,
     list_relative,
+    write_context_shards,
 )
 from profile_generator import markdown_profile
 
@@ -839,7 +841,8 @@ class ProfileContextBuilderStage(HarnessStage):
             "public_apis": ctx.analysis.get("public_apis", []),
             "internal_parity_anchors": ctx.analysis.get("internal_parity_anchors", {}),
         }
-        write(ctx.artifact("03-context.json"), json.dumps(ctx.context_index, indent=2, ensure_ascii=False))
+        context_manifest = write_context_shards(ctx.result, ctx.context_index)
+        write(ctx.artifact("03-context.json"), json.dumps(compact_context_index(ctx.context_index, context_manifest), indent=2, ensure_ascii=False))
         _record_profile_trace(
             ctx,
             self.name,
@@ -848,7 +851,7 @@ class ProfileContextBuilderStage(HarnessStage):
             function_hints=len(ctx.context_index.get("function_hints", [])),
             public_apis=len(ctx.context_index.get("public_apis", [])),
             internal_anchor_groups=len(ctx.context_index.get("internal_parity_anchors", {})),
-            output="result/harness/03-context.json",
+            output="result/harness/context/manifest.json",
         )
 
     def _collect_function_hints(self, source: Path, profile: dict[str, Any]) -> list[dict[str, str]]:
@@ -941,11 +944,16 @@ class ProfileTranslationStage(HarnessStage):
             - Code Agent 实现任务：`{ctx.out / "MODEL_TASK.md"}`
             - Test Agent 测试任务：`{ctx.out / "TEST_AGENT_TASK.md"}`
             - Validation Agent 验证任务：`{ctx.out / "VALIDATION_AGENT_TASK.md"}`
+            - Code Agent manifest：`{ctx.result / "harness" / "code-manifest.json"}`
+            - Context manifest：`{ctx.result / "harness" / "context" / "manifest.json"}`
+            - Test requirement manifest：`{ctx.result / "harness" / "test-requirements" / "manifest.json"}`
             - 执行框架主任务书：`{ctx.result / "harness" / "04-model-generation-brief.md"}`
             - parity 矩阵：`{ctx.result / "harness" / "04-function-parity.json"}`
 
             Code Agent 实现 `src/*.rs`；Test Agent 生成 `tests/*.rs`；
             Validation Agent 运行 strict 验证并返回压缩失败摘要。
+            Agent 不应一次性展开 `01-analysis.json`、`01-effective-profile.json`
+            或完整测试语义矩阵。
             """,
         )
         _record_profile_trace(
@@ -956,6 +964,9 @@ class ProfileTranslationStage(HarnessStage):
                 "out/MODEL_TASK.md",
                 "out/TEST_AGENT_TASK.md",
                 "out/VALIDATION_AGENT_TASK.md",
+                "result/harness/code-manifest.json",
+                "result/harness/context/manifest.json",
+                "result/harness/test-requirements/manifest.json",
                 "result/harness/04-model-generation-brief.md",
                 "result/harness/04-test-agent-task.md",
                 "result/harness/04-validation-agent-task.md",
