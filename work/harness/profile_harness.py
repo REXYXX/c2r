@@ -1344,9 +1344,9 @@ class ProfileTranslationStage(HarnessStage):
 
             - Agent 固定模板目录：`{ctx.root / "work" / "agents"}`
             - 主线程编排任务：`{ctx.out / "MAIN_THREAD_TASK.md"}`
-            - Code Agent 实现任务：`{ctx.out / "MODEL_TASK.md"}`
-            - Test Agent 测试任务：`{ctx.out / "TEST_AGENT_TASK.md"}`
-            - Validation Agent 验证任务：`{ctx.out / "VALIDATION_AGENT_TASK.md"}`
+            - Code Agent 实现任务：`{ctx.result / "MODEL_TASK.md"}`
+            - Test Agent 测试任务：`{ctx.result / "TEST_AGENT_TASK.md"}`
+            - Validation Agent 验证任务：`{ctx.result / "VALIDATION_AGENT_TASK.md"}`
             - Agent entry manifest：`{ctx.result / "harness" / "agent-entry" / "manifest.json"}`
             - Main Thread entry：`{ctx.result / "harness" / "agent-entry" / "main-thread.json"}`
             - Code Agent plan：`{ctx.result / "harness" / "code-plan.json"}`
@@ -1375,9 +1375,9 @@ class ProfileTranslationStage(HarnessStage):
             ],
             outputs=[
                 "out/MAIN_THREAD_TASK.md",
-                "out/MODEL_TASK.md",
-                "out/TEST_AGENT_TASK.md",
-                "out/VALIDATION_AGENT_TASK.md",
+                "result/MODEL_TASK.md",
+                "result/TEST_AGENT_TASK.md",
+                "result/VALIDATION_AGENT_TASK.md",
                 "result/harness/agent-entry/manifest.json",
                 "result/harness/agent-entry/main-thread.json",
                 "result/harness/agent-entry/code-agent.json",
@@ -2065,6 +2065,10 @@ def _write_bootstrap_report(ctx: ConversionContext) -> None:
         - 验证阶段：`not_run`
         - Rust 输出目录：`{ctx.out}`
         - Profile 摘要：`{ctx.result / "harness" / "01-profile-summary.md"}`
+        - 主线程任务书：`{ctx.out / "MAIN_THREAD_TASK.md"}`
+        - Code Agent 任务书：`{ctx.result / "MODEL_TASK.md"}`
+        - Test Agent 任务书：`{ctx.result / "TEST_AGENT_TASK.md"}`
+        - Validation Agent 任务书：`{ctx.result / "VALIDATION_AGENT_TASK.md"}`
         - 主线程入口：`{ctx.result / "harness" / "agent-entry" / "main-thread.json"}`
         - Code Agent 入口：`{ctx.result / "harness" / "agent-entry" / "code-agent.json"}`
         - Test Agent 入口：`{ctx.result / "harness" / "agent-entry" / "test-agent.json"}`

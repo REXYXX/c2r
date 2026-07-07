@@ -10,9 +10,9 @@ Agent 行为规则只维护在本目录的 Markdown 中，不再拆到额外 JSO
 渲染规则：
 
 - `main-thread.md` 渲染为输出 crate 下的 `MAIN_THREAD_TASK.md`。
-- `code-agent.md` 渲染为输出 crate 下的 `MODEL_TASK.md`。
-- `test-agent.md` 渲染为输出 crate 下的 `TEST_AGENT_TASK.md`。
-- `validation-agent.md` 渲染为输出 crate 下的 `VALIDATION_AGENT_TASK.md`。
+- `code-agent.md` 渲染为 `result/MODEL_TASK.md`。
+- `test-agent.md` 渲染为 `result/TEST_AGENT_TASK.md`。
+- `validation-agent.md` 渲染为 `result/VALIDATION_AGENT_TASK.md`。
 - 模板中的 `{{name}}` 占位符由 `work/harness/model_artifacts.py` 填充。
 - 若需要调整 agent 行为，只改对应的 `*.md` 模板，不新增 JSON 规则模板。
 

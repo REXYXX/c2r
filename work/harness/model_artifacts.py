@@ -526,6 +526,10 @@ def write_agent_entries(
     stale_checkpoints = result / "harness" / "context-checkpoints"
     if stale_checkpoints.exists():
         shutil.rmtree(stale_checkpoints)
+    for stale_name in ("MODEL_TASK.md", "TEST_AGENT_TASK.md", "VALIDATION_AGENT_TASK.md"):
+        stale_task = out / stale_name
+        if stale_task.exists():
+            stale_task.unlink()
     entries = {
         "main-thread": {
             "agent": "main_thread",
@@ -535,19 +539,19 @@ def write_agent_entries(
         "code-agent": {
             "agent": "code_agent",
             "source_doc": "work/agents/code-agent.md",
-            "rendered_task": str(out / "MODEL_TASK.md"),
+            "rendered_task": str(result / "MODEL_TASK.md"),
             "summary": code_manifest_summary,
         },
         "test-agent": {
             "agent": "test_agent",
             "source_doc": "work/agents/test-agent.md",
-            "rendered_task": str(out / "TEST_AGENT_TASK.md"),
+            "rendered_task": str(result / "TEST_AGENT_TASK.md"),
             "summary": test_requirement_summary,
         },
         "validation-agent": {
             "agent": "validation_agent",
             "source_doc": "work/agents/validation-agent.md",
-            "rendered_task": str(out / "VALIDATION_AGENT_TASK.md"),
+            "rendered_task": str(result / "VALIDATION_AGENT_TASK.md"),
         },
     }
     paths: dict[str, str] = {}
@@ -665,9 +669,9 @@ def generate_model_brief(
         "result": result,
         "logs": logs,
         "main_thread_task": out / "MAIN_THREAD_TASK.md",
-        "model_task": out / "MODEL_TASK.md",
-        "test_agent_task": out / "TEST_AGENT_TASK.md",
-        "validation_agent_task": out / "VALIDATION_AGENT_TASK.md",
+        "model_task": result / "MODEL_TASK.md",
+        "test_agent_task": result / "TEST_AGENT_TASK.md",
+        "validation_agent_task": result / "VALIDATION_AGENT_TASK.md",
         "agent_entry_manifest": result / "harness" / "agent-entry" / "manifest.json",
         "main_thread_entry": result / "harness" / "agent-entry" / "main-thread.json",
         "code_agent_entry": result / "harness" / "agent-entry" / "code-agent.json",
@@ -698,11 +702,11 @@ def generate_model_brief(
     validation_brief = render_agent_template(root, "validation-agent.md", template_values)
     write(out / "MAIN_THREAD_TASK.md", main_brief)
     write(result / "harness" / "04-main-thread-task.md", main_brief)
-    write(out / "MODEL_TASK.md", brief)
+    write(result / "MODEL_TASK.md", brief)
     write(result / "harness" / "04-model-generation-brief.md", brief)
-    write(out / "TEST_AGENT_TASK.md", test_brief)
+    write(result / "TEST_AGENT_TASK.md", test_brief)
     write(result / "harness" / "04-test-agent-task.md", test_brief)
-    write(out / "VALIDATION_AGENT_TASK.md", validation_brief)
+    write(result / "VALIDATION_AGENT_TASK.md", validation_brief)
     write(result / "harness" / "04-validation-agent-task.md", validation_brief)
 
 
@@ -782,10 +786,10 @@ def generate_report(
 
         主线程先阅读 `{out / "MAIN_THREAD_TASK.md"}` 和
         `{result / "harness" / "agent-entry" / "main-thread.json"}`，只做编排。
-        Code Agent 编写或修复 Rust 实现前，先阅读 `{out / "MODEL_TASK.md"}` 和
+        Code Agent 编写或修复 Rust 实现前，先阅读 `{result / "MODEL_TASK.md"}` 和
         `{result / "harness" / "04-model-generation-brief.md"}`。
-        测试迁移必须交给 Test Agent 的 `{out / "TEST_AGENT_TASK.md"}`，
-        严格验证必须交给 Validation Agent 的 `{out / "VALIDATION_AGENT_TASK.md"}`。
+        测试迁移必须交给 Test Agent 的 `{result / "TEST_AGENT_TASK.md"}`，
+        严格验证必须交给 Validation Agent 的 `{result / "VALIDATION_AGENT_TASK.md"}`。
         """,
     )
     write(

@@ -4,6 +4,10 @@
 - 验证阶段：`not_run`
 - Rust 输出目录：`D:\c2rust\c2rust\c2rust\flashDB_rust`
 - Profile 摘要：`D:\c2rust\c2rust\c2rust\result\harness\01-profile-summary.md`
+- 主线程任务书：`D:\c2rust\c2rust\c2rust\flashDB_rust\MAIN_THREAD_TASK.md`
+- Code Agent 任务书：`D:\c2rust\c2rust\c2rust\result\MODEL_TASK.md`
+- Test Agent 任务书：`D:\c2rust\c2rust\c2rust\result\TEST_AGENT_TASK.md`
+- Validation Agent 任务书：`D:\c2rust\c2rust\c2rust\result\VALIDATION_AGENT_TASK.md`
 - 主线程入口：`D:\c2rust\c2rust\c2rust\result\harness\agent-entry\main-thread.json`
 - Code Agent 入口：`D:\c2rust\c2rust\c2rust\result\harness\agent-entry\code-agent.json`
 - Test Agent 入口：`D:\c2rust\c2rust\c2rust\result\harness\agent-entry\test-agent.json`

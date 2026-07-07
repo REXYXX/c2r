@@ -13,9 +13,9 @@
 ## 允许动作
 
 - 运行 bootstrap harness，让 Python 扫描源码并生成轻量摘要、manifest 和任务书。
-- 把 `agent-entry/code-agent.json` 与 `MODEL_TASK.md` 交给 Code Agent。
-- 把 `agent-entry/test-agent.json` 与 `TEST_AGENT_TASK.md` 交给 Test Agent。
-- 把 `agent-entry/validation-agent.json` 与 `VALIDATION_AGENT_TASK.md` 交给 Validation Agent。
+- 把 `agent-entry/code-agent.json` 与 `{{model_task}}` 交给 Code Agent。
+- 把 `agent-entry/test-agent.json` 与 `{{test_agent_task}}` 交给 Test Agent。
+- 把 `agent-entry/validation-agent.json` 与 `{{validation_agent_task}}` 交给 Validation Agent。
 - 读取 `logs/trace/profile-harness-path.*` 审计 harness 节点是否按序执行。
 - 验证失败时只读取 `08-repair-context` 的 manifest、summary 和对应 agent shard。
 
