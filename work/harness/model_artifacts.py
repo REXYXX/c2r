@@ -12,8 +12,14 @@ import datetime as _dt
 import json
 import os
 from pathlib import Path
+import re
 import textwrap
 from typing import Any
+
+SOURCE_CONTEXT_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".hh", ".inc"}
+FUNCTION_HINT_CHUNK_SIZE = 12
+TEST_BATCH_SIZE = 3
+AGENT_PLACEHOLDER_RE = re.compile(r"\{\{([A-Za-z0-9_]+)\}\}")
 
 
 def write(path: Path, data: str) -> None:
@@ -40,6 +46,37 @@ def slug(value: str) -> str:
 
 def write_json(path: Path, value: Any) -> None:
     write(path, json.dumps(value, indent=2, ensure_ascii=False))
+
+
+def render_agent_template(root: Path, template_name: str, values: dict[str, Any]) -> str:
+    template_path = root / "agents" / template_name
+    template = template_path.read_text(encoding="utf-8")
+    rendered = template
+    for key, value in values.items():
+        rendered = rendered.replace(f"{{{{{key}}}}}", str(value))
+    missing = sorted(set(AGENT_PLACEHOLDER_RE.findall(rendered)))
+    if missing:
+        raise ValueError(f"{template_path} has unresolved placeholders: {', '.join(missing)}")
+    return rendered
+
+
+def chunks(values: list[Any], size: int) -> list[list[Any]]:
+    return [values[index : index + size] for index in range(0, len(values), size)]
+
+
+def source_context_files(values: list[str]) -> list[str]:
+    return [value for value in values if Path(value).suffix.lower() in SOURCE_CONTEXT_SUFFIXES]
+
+
+def hint_name(hint: dict[str, Any]) -> str | None:
+    for key in ("name", "symbol", "symbol_prefix", "function"):
+        if hint.get(key):
+            return str(hint[key])
+    return None
+
+
+def hint_metadata(hint: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in hint.items() if key != "excerpt"}
 
 
 def profile_name(profile: dict[str, Any]) -> str:
@@ -104,12 +141,19 @@ def generate_workspace_scaffold(out: Path, profile: dict[str, Any] | None = None
 
 def write_context_shards(result: Path, context_index: dict[str, Any]) -> dict[str, Any]:
     base = result / "harness" / "context"
+    compact_base = base / "modules"
     module_contexts = context_index.get("module_contexts", {}) or {}
     function_hints = context_index.get("function_hints", []) or []
     public_apis = context_index.get("public_apis", []) or []
     internal_anchors = context_index.get("internal_parity_anchors", {}) or {}
     manifest: dict[str, Any] = {
-        "description": "按模块拆分的 Code Agent 上下文索引；不要一次性读取完整 03-context.json。",
+        "description": "Code Agent 上下文索引；默认读取 compact_manifest，不读取 legacy full shard。",
+        "rules": [
+            "优先读取 result/harness/agent-entry/code-agent.json。",
+            "每次只处理一个 module compact_manifest。",
+            "函数提示按 function_hint_chunks 分批读取，每批最多 12 项。",
+            "legacy_full_shard 仅用于人工调试，不进入模型上下文。",
+        ],
         "modules": {},
         "global": {
             "public_apis": "result/harness/context/public-apis.json",
@@ -118,26 +162,75 @@ def write_context_shards(result: Path, context_index: dict[str, Any]) -> dict[st
     }
     for module, spec in sorted(module_contexts.items()):
         module_slug = slug(str(module))
-        source_hints = [str(item) for item in spec.get("source_hints", [])]
+        source_hints = source_context_files([str(item) for item in spec.get("source_hints", [])])
         source_set = set(source_hints)
         shard_hints = [item for item in function_hints if str(item.get("file", "")) in source_set]
+        hint_chunks = chunks(shard_hints, FUNCTION_HINT_CHUNK_SIZE)
+        function_chunk_index: list[dict[str, Any]] = []
+        module_dir = compact_base / module_slug
+        for index, hint_chunk in enumerate(hint_chunks, start=1):
+            chunk_name = f"functions-{index:03d}.json"
+            chunk_relative = f"result/harness/context/modules/{module_slug}/{chunk_name}"
+            write_json(
+                module_dir / chunk_name,
+                {
+                    "module": module,
+                    "target": spec.get("target"),
+                    "chunk": index,
+                    "chunk_count": len(hint_chunks),
+                    "function_hints": hint_chunk,
+                    "rules": [
+                        "只在实现本 chunk 中相关函数时读取。",
+                        "优先使用每个 function_hint 的 excerpt，避免打开完整 C 源文件。",
+                        "读完并完成局部实现后丢弃本 chunk 上下文。",
+                    ],
+                },
+            )
+            function_chunk_index.append(
+                {
+                    "chunk": index,
+                    "path": chunk_relative,
+                    "function_hints": len(hint_chunk),
+                    "first": hint_name(hint_chunk[0]) if hint_chunk else None,
+                    "last": hint_name(hint_chunk[-1]) if hint_chunk else None,
+                }
+            )
         shard = {
             "module": module,
             "target": spec.get("target"),
             "source_hints": source_hints,
             "required_mechanisms": spec.get("required_mechanisms", []),
-            "function_hints": shard_hints,
+            "function_hints": [hint_metadata(item) for item in shard_hints],
             "internal_parity_anchors": {
                 key: value for key, value in internal_anchors.items() if key in source_set
             },
         }
         shard_relative = f"result/harness/context/{module_slug}.json"
         write_json(base / f"{module_slug}.json", shard)
+        compact_relative = f"result/harness/context/modules/{module_slug}/manifest.json"
+        write_json(
+            module_dir / "manifest.json",
+            {
+                "module": module,
+                "target": spec.get("target"),
+                "source_files": source_hints,
+                "required_mechanisms": spec.get("required_mechanisms", []),
+                "function_hint_chunks": function_chunk_index,
+                "legacy_full_shard": shard_relative,
+                "rules": [
+                    "这是 Code Agent 默认模块入口。",
+                    "不要读取 legacy_full_shard，除非 compact chunks 不足以定位问题。",
+                    "不要读取 tests/*.rs 或 test-requirements；测试交给 Test Agent。",
+                ],
+            },
+        )
         manifest["modules"][str(module)] = {
             "target": spec.get("target"),
-            "shard": shard_relative,
+            "compact_manifest": compact_relative,
+            "legacy_full_shard": shard_relative,
             "source_hints": len(source_hints),
             "function_hints": len(shard_hints),
+            "function_hint_chunks": len(function_chunk_index),
         }
     write_json(base / "public-apis.json", {"public_apis": public_apis})
     write_json(base / "internal-parity-anchors.json", internal_anchors)
@@ -179,9 +272,10 @@ def write_test_requirement_shards(
     manifest: dict[str, Any] = {
         "description": "Test Agent 入口索引；按目标测试文件读取 target manifest，再按单个测试读取 semantic shard。",
         "rules": [
+            "优先读取 result/harness/agent-entry/test-agent.json。",
             "不要一次性读取 result/harness/01-effective-profile.json 或 01-analysis.json。",
             "不要把所有 semantic shard 同时展开到同一个上下文。",
-            "每次只处理一个 tests/*.rs 目标文件；必要时每次只读取一个测试用例 shard。",
+            "每次只处理一个 batch；每个 batch 最多 3 个测试用例。",
         ],
         "targets": {},
     }
@@ -218,14 +312,53 @@ def write_test_requirement_shards(
             for suite, spec in sorted(test_suites.items())
             if spec.get("target") == target
         }
+        required_tests = [str(name) for name in required_rust_tests.get(target, []) or []]
+        batch_index: list[dict[str, Any]] = []
+        for batch_number, test_batch in enumerate(chunks(required_tests, TEST_BATCH_SIZE), start=1):
+            batch_items = []
+            for test_name in test_batch:
+                semantic = semantic_index.get(test_name, {})
+                batch_items.append(
+                    {
+                        "test": test_name,
+                        "semantic_shard": semantic.get("shard"),
+                        "has_semantic_shard": bool(semantic.get("shard")),
+                    }
+                )
+            batch_relative = f"result/harness/test-requirements/batches/{target_slug}/batch-{batch_number:03d}.json"
+            write_json(
+                base / "batches" / target_slug / f"batch-{batch_number:03d}.json",
+                {
+                    "target": target,
+                    "batch": batch_number,
+                    "batch_count": (len(required_tests) + TEST_BATCH_SIZE - 1) // TEST_BATCH_SIZE if required_tests else 0,
+                    "items": batch_items,
+                    "rules": [
+                        "只读取本 batch 中 item 指向的 semantic_shard。",
+                        "完成本 batch 后丢弃上下文，再处理下一 batch。",
+                        "不要读取同一 target 的所有 semantic shard。",
+                    ],
+                },
+            )
+            batch_index.append(
+                {
+                    "batch": batch_number,
+                    "path": batch_relative,
+                    "tests": len(test_batch),
+                    "first": test_batch[0] if test_batch else None,
+                    "last": test_batch[-1] if test_batch else None,
+                }
+            )
         target_manifest: dict[str, Any] = {
             "target": target,
             "suites": suites,
-            "required_rust_tests": required_rust_tests.get(target, []),
+            "required_rust_tests": required_tests,
+            "batches": batch_index,
             "semantic_requirements_index": semantic_index,
             "rules": [
                 "先用 required_rust_tests 建立完整 #[test] 清单。",
-                "对每个测试读取对应 semantic shard，覆盖 C 源测试抽取出的 API、断言、循环规模和代表性数据。",
+                "按 batches 顺序处理，每次只展开一个 batch。",
+                "对 batch 中每个测试读取对应 semantic shard，覆盖 C 源测试抽取出的 API、断言、循环规模和代表性数据。",
                 "同名空壳测试或只覆盖 happy path 不合格。",
             ],
         }
@@ -237,6 +370,7 @@ def write_test_requirement_shards(
             "manifest": target_manifest_relative,
             "required_tests": len(required_rust_tests.get(target, []) or []),
             "semantic_tests": len(semantic_index),
+            "batches": len(batch_index),
             "benchmark_tests": len(benchmark.get("operation_tests", []) or [])
             if isinstance(benchmark, dict) and benchmark.get("rust_target") == target
             else 0,
@@ -253,7 +387,7 @@ def write_code_manifest(
     context_manifest: dict[str, Any],
 ) -> dict[str, Any]:
     manifest = {
-        "description": "Code Agent 最小实现入口；按模块读取 context shard，不读取完整测试矩阵。",
+        "description": "Code Agent 最小实现入口；按模块读取 compact context，不读取完整测试矩阵。",
         "implementation_files": implementation_files,
         "test_files": test_files,
         "source_to_rust_modules": profile.get("source_to_rust_modules", {}),
@@ -261,12 +395,14 @@ def write_code_manifest(
         "one_to_one_features": profile.get("one_to_one_features", {}),
         "behaviour_model_rejection": profile.get("behaviour_model_rejection", {}),
         "context_manifest": "result/harness/context/manifest.json",
+        "compact_context_manifest": "result/harness/context/manifest.json",
         "context_modules": context_manifest.get("modules", {}),
         "parity_matrix": "result/harness/04-function-parity.json",
         "rules": [
             "只实现 Cargo.toml 和 src/*.rs。",
             "不要读取完整测试矩阵；测试交给 Test Agent。",
-            "实现某个 src/*.rs 前，只读取对应 context shard 和必要 C 源文件。",
+            "实现某个 src/*.rs 前，只读取对应 compact_manifest。",
+            "函数提示按 function_hint_chunks 分批读取；不要读取 legacy_full_shard。",
         ],
     }
     write_json(result / "harness" / "code-manifest.json", manifest)
@@ -276,6 +412,197 @@ def write_code_manifest(
         "context_modules": len(context_manifest.get("modules", {})),
         "parity_matrix": "result/harness/04-function-parity.json",
     }
+
+
+def write_agent_entries(
+    root: Path,
+    result: Path,
+    source: Path,
+    out: Path,
+    code_manifest_summary: dict[str, Any],
+    test_requirement_summary: dict[str, Any],
+) -> dict[str, str]:
+    base = result / "harness" / "agent-entry"
+    checkpoint_base = result / "harness" / "context-checkpoints"
+    write_if_missing(
+        checkpoint_base / "code-agent.md",
+        render_agent_template(root, "checkpoints/code-agent.md", {}),
+    )
+    write_if_missing(
+        checkpoint_base / "test-agent.md",
+        render_agent_template(root, "checkpoints/test-agent.md", {}),
+    )
+    entries = {
+        "main-thread": {
+            "agent": "main_thread",
+            "purpose": "只负责编排、分发和审计 trace；不读取项目源码，不生成 Rust 代码。",
+            "source_doc": "agents/main-thread.md",
+            "rendered_task": str(out / "MAIN_THREAD_TASK.md"),
+            "read_order": [
+                str(out / "MAIN_THREAD_TASK.md"),
+                "result/harness/agent-entry/manifest.json",
+                "result/harness/agent-entry/code-agent.json",
+                "result/harness/agent-entry/test-agent.json",
+                "result/harness/agent-entry/validation-agent.json",
+                "logs/trace/profile-harness-path.md",
+                "result/harness/08-repair-context/manifest.json if present",
+            ],
+            "allowed_reads": [
+                "INSTRUCTION.md",
+                str(out / "MAIN_THREAD_TASK.md"),
+                "result/harness/agent-entry/*.json",
+                "logs/trace/profile-harness-path.json",
+                "logs/trace/profile-harness-path.md",
+                "result/harness/08-repair-context/manifest.json",
+                "result/harness/08-repair-context/summary.md",
+                "result/harness/08-repair-context/*-agent.json",
+                "result/harness/08-repair-context/*-agent.md",
+                "result/harness/context-checkpoints/*.md",
+                "result/issues/00-summary.md",
+                "result/output.md",
+            ],
+            "forbidden_reads": [
+                str(source),
+                str(out / "src"),
+                str(out / "tests"),
+                str(out / "target"),
+                str(out / "MODEL_TASK.md"),
+                str(out / "TEST_AGENT_TASK.md"),
+                str(out / "VALIDATION_AGENT_TASK.md"),
+                "result/harness/01-analysis.json",
+                "result/harness/01-effective-profile.json",
+                "result/harness/01-effective-profile.md",
+                "result/harness/03-context.json",
+                "result/harness/07-validation.json",
+                "result/harness/context/**/*.json except context-checkpoints",
+                "result/harness/test-requirements/**/*.json",
+            ],
+            "handoff_order": [
+                {
+                    "to": "code_agent",
+                    "entry": "result/harness/agent-entry/code-agent.json",
+                    "task": str(out / "MODEL_TASK.md"),
+                    "owns": ["Cargo.toml", "src/*.rs"],
+                },
+                {
+                    "to": "test_agent",
+                    "entry": "result/harness/agent-entry/test-agent.json",
+                    "task": str(out / "TEST_AGENT_TASK.md"),
+                    "owns": ["tests/*.rs", "test fixtures"],
+                },
+                {
+                    "to": "validation_agent",
+                    "entry": "result/harness/agent-entry/validation-agent.json",
+                    "task": str(out / "VALIDATION_AGENT_TASK.md"),
+                    "owns": ["strict validation", "compressed repair context"],
+                },
+            ],
+            "rule_source": "agents/main-thread.md",
+        },
+        "code-agent": {
+            "agent": "code_agent",
+            "purpose": "实现或修复 Cargo.toml 与 src/*.rs，测试交给 Test Agent。",
+            "owner": "subagent",
+            "source_doc": "agents/code-agent.md",
+            "rendered_task": str(out / "MODEL_TASK.md"),
+            "read_order": [
+                str(out / "MODEL_TASK.md"),
+                "result/harness/code-manifest.json",
+                "result/harness/context/manifest.json",
+            ],
+            "context_budget": {
+                "max_files_per_turn": 6,
+                "max_function_hint_chunks_per_turn": 1,
+                "reset_after_module": True,
+            },
+            "checkpoint": "result/harness/context-checkpoints/code-agent.md",
+            "allowed_large_reads": [],
+            "forbidden_reads": [
+                "result/harness/01-analysis.json",
+                "result/harness/01-effective-profile.json",
+                "result/harness/01-effective-profile.md",
+                "result/harness/07-validation.json",
+                "result/harness/context/*.json legacy_full_shard",
+                str(out / "target"),
+                str(out / "tests"),
+            ],
+            "handoff_rule_source": "agents/main-thread.md",
+            "summary": code_manifest_summary,
+        },
+        "test-agent": {
+            "agent": "test_agent",
+            "purpose": "生成或修复 tests/*.rs；按 batch 和 semantic shard 渐进读取。",
+            "owner": "subagent",
+            "source_doc": "agents/test-agent.md",
+            "rendered_task": str(out / "TEST_AGENT_TASK.md"),
+            "read_order": [
+                str(out / "TEST_AGENT_TASK.md"),
+                "result/harness/test-requirements/manifest.json",
+                "result/harness/08-repair-context/manifest.json if present",
+            ],
+            "context_budget": {
+                "max_target_files_per_turn": 1,
+                "max_batches_per_turn": 1,
+                "max_tests_per_batch": TEST_BATCH_SIZE,
+                "reset_after_batch": True,
+            },
+            "checkpoint": "result/harness/context-checkpoints/test-agent.md",
+            "allowed_large_reads": [],
+            "forbidden_reads": [
+                "result/harness/01-analysis.json",
+                "result/harness/01-effective-profile.json",
+                "result/harness/07-validation.json",
+                "all files under result/harness/test-requirements/** at once",
+                str(out / "src"),
+                str(out / "target"),
+            ],
+            "handoff_rule_source": "agents/main-thread.md",
+            "summary": test_requirement_summary,
+        },
+        "validation-agent": {
+            "agent": "validation_agent",
+            "purpose": "运行 strict 验证，回传 08-repair-context 压缩路由。",
+            "owner": "subagent",
+            "source_doc": "agents/validation-agent.md",
+            "rendered_task": str(out / "VALIDATION_AGENT_TASK.md"),
+            "read_order": [
+                str(out / "VALIDATION_AGENT_TASK.md"),
+                "result/harness/08-repair-context/manifest.json after validation",
+            ],
+            "context_budget": {
+                "return_only_repair_context": True,
+                "max_log_tail_chars": 8000,
+            },
+            "forbidden_reads": [
+                "full cargo stdout/stderr beyond tail",
+                "full result/harness/01-analysis.json",
+            ],
+            "handoff_rule_source": "agents/main-thread.md",
+        },
+    }
+    paths: dict[str, str] = {}
+    for name, payload in entries.items():
+        relative = f"result/harness/agent-entry/{name}.json"
+        write_json(base / f"{name}.json", payload)
+        paths[name] = relative
+    write_json(
+        base / "manifest.json",
+        {
+            "description": "最小 agent 入口。主线程先读 main-thread.json；子 agent 再按各自 read_order 读取下一层小文件。",
+            "entries": paths,
+            "start_here": "result/harness/agent-entry/main-thread.json",
+            "source_docs": {
+                "main-thread": "agents/main-thread.md",
+                "code-agent": "agents/code-agent.md",
+                "test-agent": "agents/test-agent.md",
+                "validation-agent": "agents/validation-agent.md",
+                "code-agent-checkpoint": "agents/checkpoints/code-agent.md",
+                "test-agent-checkpoint": "agents/checkpoints/test-agent.md",
+            },
+            "rule_source": "agents/README.md",
+        },
+    )
+    return paths
 
 
 def generate_model_brief(
@@ -288,8 +615,8 @@ def generate_model_brief(
     analysis: dict[str, Any] | None = None,
     context_index: dict[str, Any] | None = None,
 ) -> None:
-    """输出 Code/Test/Validation Agent 分工任务书，避免单上下文承载全部测试矩阵。"""
-    del root
+    """输出 Main/Code/Test/Validation Agent 分工任务书，避免单上下文承载全部工程。"""
+    root = root.resolve()
     analysis = analysis or {}
     context_index = context_index or {}
     required_files = [str(path) for path in profile.get("required_output_files", [])]
@@ -329,7 +656,8 @@ def generate_model_brief(
         "modules": {
             str(name): {
                 "target": spec.get("target"),
-                "shard": f"result/harness/context/{slug(str(name))}.json",
+                "compact_manifest": f"result/harness/context/modules/{slug(str(name))}/manifest.json",
+                "legacy_full_shard": f"result/harness/context/{slug(str(name))}.json",
             }
             for name, spec in sorted((context_index.get("module_contexts", {}) or {}).items())
         }
@@ -349,179 +677,57 @@ def generate_model_brief(
                 "manifest": spec.get("manifest"),
                 "required_tests": spec.get("required_tests", 0),
                 "semantic_tests": spec.get("semantic_tests", 0),
+                "batches": spec.get("batches", 0),
                 "benchmark_tests": spec.get("benchmark_tests", 0),
             }
             for target, spec in test_requirement_manifest.get("targets", {}).items()
         },
     }
+    agent_entries = write_agent_entries(root, result, source, out, code_manifest_summary, test_requirement_summary)
 
-    brief = "\n".join(
-        [
-            f"# {task_title}",
-            "",
-            "你是 Code Agent。Python 执行框架不会生成 Rust 实现；Code Agent",
-            "只负责实现 Rust crate 的 `Cargo.toml` 与 `src/*.rs`。",
-            "Rust 测试必须委派给 Test Agent；严格验证必须委派给 Validation Agent。",
-            "",
-            "## 源码与输出",
-            "",
-            f"- {source_label(profile)}: `{source}`",
-            f"- Rust crate 输出：`{out}`",
-            f"- 结果产物：`{result}`",
-            f"- 日志目录：`{logs}`",
-            "",
-            "## Agent 分工",
-            "",
-            "- Code Agent：实现库代码、公共 API、模块边界和核心语义，只处理 `Cargo.toml` 与 `src/*.rs`。",
-            f"- Test Agent：读取 `{out / 'TEST_AGENT_TASK.md'}`，只展开测试矩阵和 benchmark 细节，负责 `tests/*.rs`。",
-            f"- Validation Agent：读取 `{out / 'VALIDATION_AGENT_TASK.md'}`，运行 strict 验证并输出压缩失败摘要。",
-            "- Code Agent 不要把完整 README/benchmark 覆盖矩阵或完整验证日志读入当前上下文。",
-            "",
-            "## Code Agent 强制流程",
-            "",
-            "1. 先实现 `Cargo.toml` 与 `src/*.rs`，不要直接编写 `tests/*.rs`。",
-            f"2. 实现完成后必须调用 Test Agent，并只把 `{out / 'TEST_AGENT_TASK.md'}` 作为测试任务入口。",
-            "3. Test Agent 完成后，Code Agent 只接收测试变更摘要；不要回读完整测试矩阵。",
-            f"4. 测试生成完成后必须调用 Validation Agent，并只把 `{out / 'VALIDATION_AGENT_TASK.md'}` 作为验证任务入口。",
-            "5. Validation Agent 返回失败摘要后，`src/*.rs` 问题由 Code Agent 修复，`tests/*.rs` 问题交回 Test Agent。",
-            "6. 每次修复后重复 Test Agent / Validation Agent 交接，直到 strict 验证通过。",
-            "",
-            "## 生成产物索引",
-            "",
-            f"- Code Agent manifest：`{result / 'harness' / 'code-manifest.json'}`",
-            f"- context manifest：`{result / 'harness' / 'context' / 'manifest.json'}`",
-            f"- parity matrix: `{result / 'harness' / '04-function-parity.json'}`",
-            f"- Test Agent 任务书：`{out / 'TEST_AGENT_TASK.md'}`",
-            f"- Validation Agent 任务书：`{out / 'VALIDATION_AGENT_TASK.md'}`",
-            "",
-            "不要读取 `01-analysis.json`、`01-effective-profile.json` 或完整 `03-context.json`；",
-            "这些文件只用于机器审计和调试。",
-            "",
-            "## 必读约束文档",
-            "",
-            bullets(constraint_files),
-            "",
-            "## Code Agent Manifest",
-            "",
-            "```json",
-            json_block(code_manifest_summary),
-            "```",
-            "",
-            "## 测试与 benchmark 摘要",
-            "",
-            "完整测试清单不要在 Code Agent 上下文展开；这里只保留计数，具体内容见 Test Agent 任务书。",
-            "",
-            "```json",
-            json_block(test_summary),
-            "```",
-            "",
-            "## 上下文索引摘要",
-            "",
-            "Code Agent 按模块读取 `result/harness/context/manifest.json` 中指向的 shard。",
-            "",
-            "```json",
-            json_block(context_summary),
-            "```",
-            "",
-            "## 工作规则",
-            "",
-            f"- 直接在 `{out}` 中编写 Rust 源码；不要把 Rust 源码写进 Python。",
-            "- 从 `code-manifest.json` 读取模块边界、API token 和快捷实现拦截规则。",
-            "- 实现某个模块时，只读取对应 context shard 和必要 C 源文件。",
-            "- 仅使用安全 Rust；除非动态 profile 明确允许，不要使用 C FFI。",
-            "- Code Agent 完成库实现后，必须交给 Test Agent 生成 `tests/*.rs`。",
-            "- Test Agent 完成后，必须交给 Validation Agent 运行 strict 验证。",
-            "- 把验证失败视为生成修复提示，不要为了通过而削弱 profile 检查。",
-            "",
-        ]
-    )
-
-    test_brief = "\n".join(
-        [
-            f"# {project} Test Agent 任务",
-            "",
-            "你是 Test Agent。目标是生成完整 Rust 测试，不占用 Code Agent 上下文。",
-            "",
-            "## 输入与输出",
-            "",
-            f"- C 源项目：`{source}`",
-            f"- Rust crate：`{out}`",
-            f"- 结果目录：`{result}`",
-            "",
-            "## 允许编辑范围",
-            "",
-            "- 优先编辑 `tests/*.rs`。",
-            "- 可按需补充测试 fixture、dev-dependencies 或测试辅助模块。",
-            "- 不要重写核心 `src/*.rs`；若发现 API 缺口，记录最小缺口并交回 Code Agent 处理。",
-            "",
-            "## 必需测试文件",
-            "",
-            bullets(test_files),
-            "",
-            "## 测试 Requirement Manifest",
-            "",
-            f"- 根索引：`{result / 'harness' / 'test-requirements' / 'manifest.json'}`",
-            "- 先读取根索引，再按目标测试文件读取 target manifest。",
-            "- 每个测试的深层语义只读取对应 semantic shard，不要一次性展开全部 shard。",
-            "",
-            "```json",
-            json_block(test_requirement_summary),
-            "```",
-            "",
-            "## C 测试语义覆盖方式",
-            "",
-            "同名 Rust 测试不够；semantic shard 由 C 测试函数实时抽取。",
-            "Test Agent 必须逐个 shard 覆盖其中的公开 API 调用、断言字段、",
-            "常量/循环规模、辅助函数调用和代表性测试数据。",
-            "",
-            "## 测试工作规则",
-            "",
-            "- 按 target manifest 中的 `required_rust_tests` 逐项创建 Rust `#[test]`。",
-            "- 按每个测试的 semantic shard 覆盖深层行为；不能只保留同名空壳或浅层 happy path。",
-            "- 对重复 C 测试名使用动态 profile 已生成的唯一 Rust 测试名。",
-            "- 每个测试使用隔离临时状态，避免测试间共享全局状态。",
-            "- benchmark 风格测试只验证语义和结果结构，不把墙钟耗时作为稳定断言。",
-            "- 完成后运行 `cargo test`；若失败，只保留必要诊断摘要给 Validation Agent。",
-            "",
-        ]
-    )
-
-    validation_brief = "\n".join(
-        [
-            f"# {project} Validation Agent 任务",
-            "",
-            "你是 Validation Agent。目标是运行严格验证并压缩失败诊断，不把完整日志回灌给 Code Agent。",
-            "",
-            "## 验证命令",
-            "",
-            "```bash",
-            f"python work/run_conversion.py --source {source} --out {out} --result {result} --logs {logs} --strict",
-            "```",
-            "",
-            "必要时也在 Rust crate 中运行：",
-            "",
-            "```bash",
-            f"cd {out}",
-            "cargo check",
-            "cargo test",
-            "```",
-            "",
-            "## 必读验证产物",
-            "",
-            f"- `{result / 'harness' / '07-validation.json'}`",
-            f"- `{result / 'issues' / '00-summary.md'}`",
-            f"- `{logs / 'trace' / 'profile-harness-path.json'}`",
-            "",
-            "## 诊断边界",
-            "",
-            "- 优先归类编译错误、缺失 API token、缺失测试、README/benchmark 覆盖失败。",
-            "- `src/*.rs` 或 `Cargo.toml` 问题交回 Code Agent。",
-            "- `tests/*.rs` 问题交回 Test Agent。",
-            "- 不要删除或削弱动态 profile、测试矩阵、benchmark 覆盖或 `unsafe` 检查。",
-            "- 输出给 Code Agent 的摘要只保留失败类别、涉及文件和下一步动作，避免回灌完整日志。",
-            "",
-        ]
-    )
+    template_values = {
+        "project": project,
+        "task_title": task_title,
+        "source_label": source_label(profile),
+        "source": source,
+        "out": out,
+        "out_src": out / "src",
+        "out_tests": out / "tests",
+        "out_target": out / "target",
+        "result": result,
+        "logs": logs,
+        "main_thread_task": out / "MAIN_THREAD_TASK.md",
+        "model_task": out / "MODEL_TASK.md",
+        "test_agent_task": out / "TEST_AGENT_TASK.md",
+        "validation_agent_task": out / "VALIDATION_AGENT_TASK.md",
+        "agent_entry_manifest": result / "harness" / "agent-entry" / "manifest.json",
+        "main_thread_entry": result / "harness" / "agent-entry" / "main-thread.json",
+        "code_agent_entry": result / "harness" / "agent-entry" / "code-agent.json",
+        "test_agent_entry": result / "harness" / "agent-entry" / "test-agent.json",
+        "validation_agent_entry": result / "harness" / "agent-entry" / "validation-agent.json",
+        "trace_md": logs / "trace" / "profile-harness-path.md",
+        "trace_json": logs / "trace" / "profile-harness-path.json",
+        "repair_manifest": result / "harness" / "08-repair-context" / "manifest.json",
+        "validation_json": result / "harness" / "07-validation.json",
+        "issue_summary": result / "issues" / "00-summary.md",
+        "code_manifest_path": result / "harness" / "code-manifest.json",
+        "context_manifest_path": result / "harness" / "context" / "manifest.json",
+        "test_requirements_manifest": result / "harness" / "test-requirements" / "manifest.json",
+        "parity_matrix": result / "harness" / "04-function-parity.json",
+        "constraint_files_bullets": bullets(constraint_files),
+        "required_test_files_bullets": bullets(test_files),
+        "agent_entries_json": json_block(agent_entries),
+        "code_manifest_summary_json": json_block(code_manifest_summary),
+        "test_summary_json": json_block(test_summary),
+        "context_summary_json": json_block(context_summary),
+        "test_requirement_summary_json": json_block(test_requirement_summary),
+    }
+    main_brief = render_agent_template(root, "main-thread.md", template_values)
+    brief = render_agent_template(root, "code-agent.md", template_values)
+    test_brief = render_agent_template(root, "test-agent.md", template_values)
+    validation_brief = render_agent_template(root, "validation-agent.md", template_values)
+    write(out / "MAIN_THREAD_TASK.md", main_brief)
+    write(result / "harness" / "04-main-thread-task.md", main_brief)
     write(out / "MODEL_TASK.md", brief)
     write(result / "harness" / "04-model-generation-brief.md", brief)
     write(out / "TEST_AGENT_TASK.md", test_brief)
@@ -549,11 +755,17 @@ def generate_report(
     status = "已找到" if source.exists() else "当前环境未找到"
     failures = validation.get("failures", [])
     cargo_test = validation.get("cargo_test", {"status": "not_run"})
+    repair_required = validation.get("repair_required", {}) if isinstance(validation, dict) else {}
+    compressed_repair_context = validation.get("compressed_repair_context", {}) if isinstance(validation, dict) else {}
     artifact = artifact_config(profile)
     report_title = artifact.get("report_title") or f"{display_name(profile)} Rust 转换执行框架报告"
 
     def bullet_list(values: list[str]) -> str:
         return "\n".join(f"- `{value}`" for value in values) if values else "- 无"
+
+    def route_count(name: str) -> int:
+        values = repair_required.get(name, []) if isinstance(repair_required, dict) else []
+        return len(values) if isinstance(values, list) else 0
 
     write(
         result / "output.md",
@@ -585,12 +797,21 @@ def generate_report(
         - 验证状态：`{validation.get("status", "not_run")}`
         - `cargo test` 状态：`{cargo_test.get("status", "not_run")}`
 
+        ## 修复路由
+
+        - Test Agent 待修复：{route_count("test_agent")}
+        - Code Agent 待修复：{route_count("code_agent")}
+        - Validation Agent 待处理：{route_count("validation_agent")}
+        - 压缩上下文：`{compressed_repair_context.get("manifest", "result/harness/08-repair-context/manifest.json")}`
+
         ## 失败项
 
         {bullet_list(failures)}
 
         ## 模型任务书
 
+        主线程先阅读 `{out / "MAIN_THREAD_TASK.md"}` 和
+        `{result / "harness" / "agent-entry" / "main-thread.json"}`，只做编排。
         Code Agent 编写或修复 Rust 实现前，先阅读 `{out / "MODEL_TASK.md"}` 和
         `{result / "harness" / "04-model-generation-brief.md"}`。
         测试迁移必须交给 Test Agent 的 `{out / "TEST_AGENT_TASK.md"}`，
@@ -609,10 +830,18 @@ def generate_report(
 
         {bullet_list(failures)}
 
+        ## 修复路由
+
+        - Test Agent 待修复：{route_count("test_agent")}
+        - Code Agent 待修复：{route_count("code_agent")}
+        - Validation Agent 待处理：{route_count("validation_agent")}
+        - 压缩上下文：`{compressed_repair_context.get("manifest", "result/harness/08-repair-context/manifest.json")}`
+
         ## 下一步要求
 
-        Code Agent 必须基于动态 profile 和模型任务书，在 `{out}` 中编写或修复
-        Rust 实现。测试迁移由 Test Agent 驱动，严格验证和压缩诊断由
+        主线程必须先按 `{out / "MAIN_THREAD_TASK.md"}` 分发任务，不读取源码或
+        Rust `src/tests`。Code Agent 基于动态 profile 和模型任务书，在 `{out}`
+        中编写或修复 Rust 实现。测试迁移由 Test Agent 驱动，严格验证和压缩诊断由
         Validation Agent 驱动。
         Python 不得作为预写 Rust 实现字符串的容器。
         """,

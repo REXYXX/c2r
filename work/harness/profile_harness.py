@@ -7,6 +7,7 @@ markdown profile 只作为人工覆盖层；源码布局、测试映射、benchm
 
 from __future__ import annotations
 
+from collections import Counter
 import copy
 import json
 import re
@@ -38,6 +39,7 @@ from model_artifacts import (
     generate_report,
     generate_workspace_scaffold,
     list_relative,
+    slug,
     write_context_shards,
 )
 from profile_generator import markdown_profile
@@ -51,6 +53,10 @@ CONTROL_KEYWORDS = {
     "return",
     "sizeof",
 }
+
+SOURCE_CONTEXT_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".hh", ".inc"}
+TEST_CONTEXT_SUFFIXES = SOURCE_CONTEXT_SUFFIXES | {".md"}
+INCLUDE_CONTEXT_SUFFIXES = {".h", ".hpp", ".hh", ".inc"}
 
 
 def _profile_name(profile: dict[str, Any]) -> str:
@@ -380,9 +386,9 @@ class ProfileProjectAnalysisStage(HarnessStage):
 
     def run(self, ctx: ConversionContext) -> None:
         layout = _layout(self.profile)
-        src_files = self._list_many(ctx.source, _as_list(layout.get("source_dirs")))
-        test_files = self._list_many(ctx.source, _as_list(layout.get("test_dirs")))
-        include_files = self._list_many(ctx.source, _as_list(layout.get("include_dirs")))
+        src_files = self._list_many(ctx.source, _as_list(layout.get("source_dirs")), SOURCE_CONTEXT_SUFFIXES)
+        test_files = self._list_many(ctx.source, _as_list(layout.get("test_dirs")), TEST_CONTEXT_SUFFIXES)
+        include_files = self._list_many(ctx.source, _as_list(layout.get("include_dirs")), INCLUDE_CONTEXT_SUFFIXES)
         all_files = src_files + include_files + test_files
         _record_profile_trace(
             ctx,
@@ -449,10 +455,13 @@ class ProfileProjectAnalysisStage(HarnessStage):
             ],
         )
 
-    def _list_many(self, root: Path, subdirs: list[str]) -> list[str]:
+    def _list_many(self, root: Path, subdirs: list[str], suffixes: set[str] | None = None) -> list[str]:
         files: list[str] = []
         for subdir in subdirs:
-            files.extend(list_relative(root, subdir))
+            for relative in list_relative(root, subdir):
+                if suffixes is not None and Path(relative).suffix.lower() not in suffixes:
+                    continue
+                files.append(relative)
         return files
 
     def _collect_components(self, files: list[str]) -> dict[str, list[str]]:
@@ -460,7 +469,12 @@ class ProfileProjectAnalysisStage(HarnessStage):
         filters = self.profile.get("component_filters", {})
         for name, tokens in filters.items():
             lowered_tokens = [str(token).lower() for token in tokens]
-            components[name] = [path for path in files if any(token in path.lower() for token in lowered_tokens)]
+            components[name] = [
+                path
+                for path in files
+                if Path(path).suffix.lower() in SOURCE_CONTEXT_SUFFIXES
+                and any(token in path.lower() for token in lowered_tokens)
+            ]
         return components
 
     def _derive_profile(
@@ -576,60 +590,104 @@ class ProfileProjectAnalysisStage(HarnessStage):
             target = str(spec.get("target", ""))
             path = source / relative
             text = read_text(path)
+            macros = self._macro_definitions(text)
             counts: dict[str, int] = {}
             for raw_name in _test_runs_from_path(path, pattern):
                 counts[raw_name] = counts.get(raw_name, 0) + 1
                 rust_name = duplicate_names.get((suite, raw_name, counts[raw_name]), raw_name)
                 body = _extract_c_function_body(text, raw_name)
-                semantic = self._semantic_requirements_from_body(body, public_api_set)
+                semantic = self._semantic_requirements_from_body(raw_name, body, text, macros, public_api_set)
                 if semantic:
                     semantic["source"] = relative
                     semantic["c_test"] = raw_name
                     requirements.setdefault(target, {})[rust_name] = semantic
         return requirements
 
-    def _semantic_requirements_from_body(self, body: str, public_api_set: set[str]) -> dict[str, Any]:
+    def _semantic_requirements_from_body(
+        self,
+        test_name: str,
+        body: str,
+        file_text: str,
+        macros: dict[str, str],
+        public_api_set: set[str],
+    ) -> dict[str, Any]:
         calls = self._calls_from_body(body)
         assertions = self._assertion_expressions(body)
         loop_headers = [match.group(0) for match in re.finditer(r"\b(?:for|while)\s*\([^{}]{0,240}\)", body)]
-        public_api_calls = sorted({name for name in calls if name in public_api_set})
+        public_api_call_counts = Counter(name for name in calls if name in public_api_set)
+        public_api_calls = sorted(public_api_call_counts)
         assertion_fields = sorted({field for expression in assertions for field in self._field_tokens(expression)})
         assertion_constants = sorted({token for expression in assertions for token in self._constant_tokens(expression)})
         loop_tokens = sorted({token for header in loop_headers for token in self._constant_tokens(header)})
+        body_constants = sorted(set(self._constant_tokens(body)))
+        macro_tokens = self._macro_dependency_tokens(body_constants, macros)
         literals = self._representative_literals(body)
-        helper_calls = sorted(
-            {
-                name
-                for name in calls
-                if name not in public_api_set
-                and not name.startswith("test_assert")
-                and name not in CONTROL_KEYWORDS
-            }
-        )
+        defined_helpers = self._defined_function_names(file_text)
+        direct_helper_calls = {
+            name
+            for name in calls
+            if name not in public_api_set
+            and not name.startswith("test_assert")
+            and name not in CONTROL_KEYWORDS
+        }
+        referenced_helper_callbacks = {
+            name
+            for name in re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", body)
+            if name in defined_helpers
+            and name not in direct_helper_calls
+            and name not in public_api_set
+            and not name.startswith("test_assert")
+            and name not in CONTROL_KEYWORDS
+        }
+        helper_calls = sorted(direct_helper_calls | referenced_helper_callbacks)
+        helper_observations = self._expanded_helper_observations(file_text, helper_calls, public_api_set)
+        expanded_api_calls = helper_observations.get("public_api_calls", [])
+        expanded_api_call_counts = helper_observations.get("public_api_call_counts", {})
+        allowed_api_calls = set(public_api_calls) | set(expanded_api_calls)
+        forbidden_api_calls = self._forbidden_public_api_calls(public_api_set, allowed_api_calls, test_name)
 
-        if not (public_api_calls or assertion_fields or assertion_constants or loop_tokens or literals or helper_calls):
+        if not (
+            public_api_calls
+            or assertion_fields
+            or assertion_constants
+            or loop_tokens
+            or literals
+            or helper_calls
+            or macro_tokens
+            or expanded_api_calls
+        ):
             return {}
 
-        minimum_assertions = min(max(1, len(assertions) // 2), 8) if assertions else 0
+        expanded_assertions = int(helper_observations.get("assertion_count", 0) or 0)
+        minimum_assertions = min(max(1, (len(assertions) + expanded_assertions) // 2), 12) if assertions or expanded_assertions else 0
         static_validation = {
             "required_api_calls": public_api_calls,
+            "required_api_call_counts": dict(sorted(public_api_call_counts.items())),
+            "required_expanded_api_calls": expanded_api_calls,
+            "required_expanded_api_call_counts": expanded_api_call_counts,
             "required_assertion_fields": assertion_fields,
             "required_assertion_constants": assertion_constants[:24],
             "required_loop_tokens": loop_tokens[:16],
             "required_representative_literals": literals[:16],
+            "required_macro_expansion_tokens": macro_tokens[:64],
+            "forbidden_api_calls": forbidden_api_calls[:64],
             "minimum_assertions": minimum_assertions,
             "requires_loop": bool(loop_headers),
         }
         observations = {
             "public_api_calls": public_api_calls,
+            "public_api_call_counts": dict(sorted(public_api_call_counts.items())),
             "assertion_count": len(assertions),
             "assertion_fields": assertion_fields,
             "assertion_constants": assertion_constants,
+            "body_constants": body_constants,
+            "macro_expansion_tokens": macro_tokens,
             "loop_count": len(loop_headers),
             "loop_headers": loop_headers,
             "loop_tokens": loop_tokens,
             "representative_literals": literals,
             "helper_calls": helper_calls,
+            "expanded_helper_observations": helper_observations,
         }
         return {
             "requirements": [
@@ -646,6 +704,180 @@ class ProfileProjectAnalysisStage(HarnessStage):
             if name not in CONTROL_KEYWORDS and name not in {"sizeof", "defined"}
         ]
 
+    def _macro_definitions(self, text: str) -> dict[str, str]:
+        definitions: dict[str, str] = {}
+        logical_lines: list[str] = []
+        current = ""
+        for raw_line in text.splitlines():
+            line = raw_line.rstrip()
+            if current:
+                current += " " + line.rstrip("\\").strip()
+            else:
+                current = line.rstrip("\\").strip()
+            if line.endswith("\\"):
+                continue
+            logical_lines.append(current)
+            current = ""
+        if current:
+            logical_lines.append(current)
+        for line in logical_lines:
+            match = re.match(r"\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*\([^)]*\))?\s+(.+?)\s*$", line)
+            if match:
+                definitions[match.group(1)] = match.group(2)
+        return definitions
+
+    def _macro_dependency_tokens(self, constants: list[str], macros: dict[str, str]) -> list[str]:
+        tokens: list[str] = []
+        seen: set[str] = set()
+
+        def visit(name: str, depth: int) -> None:
+            if depth > 8 or name in seen or name not in macros:
+                return
+            seen.add(name)
+            _append_unique(tokens, name)
+            expression = macros[name]
+            for token in self._constant_tokens(expression):
+                _append_unique(tokens, token)
+            for number in re.findall(r"\b\d+\b", expression):
+                if int(number) >= 8:
+                    _append_unique(tokens, number)
+            for child in self._constant_tokens(expression):
+                visit(child, depth + 1)
+
+        for constant in constants:
+            visit(constant, 0)
+        return tokens
+
+    def _defined_function_names(self, text: str) -> set[str]:
+        names: set[str] = set()
+        for match in re.finditer(
+            r"(?m)^\s*(?:static\s+)?(?:inline\s+)?[A-Za-z_][A-Za-z0-9_\s\*]*\s+([A-Za-z_][A-Za-z0-9_]*)\s*\([^;{}]*\)\s*\{",
+            text,
+        ):
+            names.add(match.group(1))
+        return names
+
+    def _expanded_helper_observations(
+        self,
+        file_text: str,
+        helper_calls: list[str],
+        public_api_set: set[str],
+    ) -> dict[str, Any]:
+        api_counts: Counter[str] = Counter()
+        assertion_count = 0
+        assertion_fields: set[str] = set()
+        assertion_constants: set[str] = set()
+        loop_headers: list[str] = []
+        loop_tokens: set[str] = set()
+        literals: list[str] = []
+        helper_chain: list[str] = []
+        visited: set[str] = set()
+
+        def visit(name: str, depth: int) -> None:
+            nonlocal assertion_count
+            if depth > 3 or name in visited:
+                return
+            visited.add(name)
+            body = _extract_c_function_body(file_text, name)
+            if not body:
+                return
+            _append_unique(helper_chain, name)
+            calls = self._calls_from_body(body)
+            api_counts.update(call for call in calls if call in public_api_set)
+            assertions = self._assertion_expressions(body)
+            assertion_count += len(assertions)
+            for expression in assertions:
+                assertion_fields.update(self._field_tokens(expression))
+                assertion_constants.update(self._constant_tokens(expression))
+            for match in re.finditer(r"\b(?:for|while)\s*\([^{}]{0,240}\)", body):
+                header = match.group(0)
+                _append_unique(loop_headers, header)
+                loop_tokens.update(self._constant_tokens(header))
+            for literal in self._representative_literals(body):
+                _append_unique(literals, literal)
+            for call in calls:
+                if call not in public_api_set and not call.startswith("test_assert") and call not in CONTROL_KEYWORDS:
+                    visit(call, depth + 1)
+
+        for helper in helper_calls:
+            visit(helper, 0)
+        return {
+            "helper_call_chain": helper_chain,
+            "public_api_calls": sorted(api_counts),
+            "public_api_call_counts": dict(sorted(api_counts.items())),
+            "assertion_count": assertion_count,
+            "assertion_fields": sorted(assertion_fields),
+            "assertion_constants": sorted(assertion_constants),
+            "loop_count": len(loop_headers),
+            "loop_headers": loop_headers,
+            "loop_tokens": sorted(loop_tokens),
+            "representative_literals": literals,
+        }
+
+    def _forbidden_public_api_calls(
+        self,
+        public_api_set: set[str],
+        allowed_api_calls: set[str],
+        test_name: str,
+    ) -> list[str]:
+        operation_tokens = self._operation_tokens(test_name)
+        forbidden = []
+        for name in sorted(public_api_set):
+            if name in allowed_api_calls:
+                continue
+            if re.search(r"(?:^|_)(?:init|deinit|control|check|set_default)(?:_|$)", name):
+                continue
+            if self._is_same_operation_variant(name, allowed_api_calls) or self._is_named_operation_substitute(
+                name, allowed_api_calls, operation_tokens
+            ):
+                forbidden.append(name)
+        return forbidden
+
+    def _operation_tokens(self, test_name: str) -> set[str]:
+        aliases = {
+            "del": {"del", "delete"},
+            "delete": {"del", "delete"},
+            "append": {"append"},
+            "set": {"set"},
+            "clean": {"clean"},
+            "erase": {"erase"},
+            "format": {"format"},
+            "write": {"write"},
+        }
+        tokens = set(re.findall(r"[A-Za-z0-9]+", test_name.lower()))
+        operations: set[str] = set()
+        for token in tokens:
+            operations.update(aliases.get(token, set()))
+        return operations
+
+    def _is_same_operation_variant(self, candidate: str, allowed_api_calls: set[str]) -> bool:
+        for allowed in allowed_api_calls:
+            if candidate.startswith(f"{allowed}_") or allowed.startswith(f"{candidate}_"):
+                return True
+        return False
+
+    def _is_named_operation_substitute(
+        self,
+        candidate: str,
+        allowed_api_calls: set[str],
+        operation_tokens: set[str],
+    ) -> bool:
+        if not operation_tokens:
+            return False
+        candidate_ops = self._operation_tokens(candidate)
+        if not (candidate_ops & operation_tokens):
+            return False
+        allowed_ops = set().union(*(self._operation_tokens(name) for name in allowed_api_calls)) if allowed_api_calls else set()
+        if allowed_ops & candidate_ops:
+            return False
+        if self._api_family(candidate) not in {self._api_family(name) for name in allowed_api_calls}:
+            return False
+        return True
+
+    def _api_family(self, name: str) -> str:
+        parts = name.split("_")
+        return "_".join(parts[:2]) if len(parts) >= 2 else name
+
     def _assertion_expressions(self, body: str) -> list[str]:
         return re.findall(r"\b(?:test_assert[A-Za-z0-9_]*|assert)\s*\((.*?)\)\s*;", body, re.S)
 
@@ -653,7 +885,7 @@ class ProfileProjectAnalysisStage(HarnessStage):
         return sorted(set(re.findall(r"(?:->|\.)\s*([A-Za-z_][A-Za-z0-9_]*)", text)))
 
     def _constant_tokens(self, text: str) -> list[str]:
-        return sorted(set(re.findall(r"\b[A-Z][A-Z0-9_]{2,}\b", text)))
+        return sorted(set(re.findall(r"(?<![A-Za-z0-9_])_?[A-Z][A-Z0-9_]{2,}(?![A-Za-z0-9_])", text)))
 
     def _representative_literals(self, body: str) -> list[str]:
         literals = []
@@ -877,10 +1109,30 @@ class ProfileContextBuilderStage(HarnessStage):
                 text = path.read_text(encoding="utf-8", errors="ignore")
             except OSError:
                 continue
+            lines = text.splitlines()
             for token in profile.get("function_hint_tokens", []):
-                if str(token) in text:
-                    hints.append({"file": str(path.relative_to(source)).replace("\\", "/"), "symbol_prefix": str(token)})
+                token_text = str(token)
+                if token_text not in text:
+                    continue
+                line_numbers = [idx + 1 for idx, line in enumerate(lines) if token_text in line]
+                first_line = line_numbers[0] if line_numbers else None
+                excerpt = self._line_excerpt(lines, first_line) if first_line else []
+                hints.append(
+                    {
+                        "file": str(path.relative_to(source)).replace("\\", "/"),
+                        "symbol_prefix": token_text,
+                        "line": first_line,
+                        "excerpt": excerpt,
+                    }
+                )
         return hints
+
+    def _line_excerpt(self, lines: list[str], line_number: int | None, radius: int = 3) -> list[str]:
+        if line_number is None:
+            return []
+        start = max(1, line_number - radius)
+        end = min(len(lines), line_number + radius)
+        return [f"{idx}: {lines[idx - 1].strip()[:160]}" for idx in range(start, end + 1)]
 
 
 class ProfileParityMatrixStage(HarnessStage):
@@ -938,18 +1190,24 @@ class ProfileTranslationStage(HarnessStage):
             f"""
             # 模型引导翻译
 
-            执行框架已输出面向 Code Agent、Test Agent 和 Validation Agent
-            的生成指引，而不是从 Python 写入 Rust 实现。
+            执行框架已从 `agents/` 固定中文模板渲染出面向 Main Thread、
+            Code Agent、Test Agent 和 Validation Agent 的分工指引，而不是
+            从 Python 写入 Rust 实现或内联长篇 agent 提示词。
 
+            - Agent 固定模板目录：`{ctx.root / "agents"}`
+            - 主线程编排任务：`{ctx.out / "MAIN_THREAD_TASK.md"}`
             - Code Agent 实现任务：`{ctx.out / "MODEL_TASK.md"}`
             - Test Agent 测试任务：`{ctx.out / "TEST_AGENT_TASK.md"}`
             - Validation Agent 验证任务：`{ctx.out / "VALIDATION_AGENT_TASK.md"}`
+            - Agent entry manifest：`{ctx.result / "harness" / "agent-entry" / "manifest.json"}`
+            - Main Thread entry：`{ctx.result / "harness" / "agent-entry" / "main-thread.json"}`
             - Code Agent manifest：`{ctx.result / "harness" / "code-manifest.json"}`
             - Context manifest：`{ctx.result / "harness" / "context" / "manifest.json"}`
             - Test requirement manifest：`{ctx.result / "harness" / "test-requirements" / "manifest.json"}`
             - 执行框架主任务书：`{ctx.result / "harness" / "04-model-generation-brief.md"}`
             - parity 矩阵：`{ctx.result / "harness" / "04-function-parity.json"}`
 
+            Main Thread 只做编排，不读取 C 源码或 Rust `src/tests`；
             Code Agent 实现 `src/*.rs`；Test Agent 生成 `tests/*.rs`；
             Validation Agent 运行 strict 验证并返回压缩失败摘要。
             Agent 不应一次性展开 `01-analysis.json`、`01-effective-profile.json`
@@ -960,13 +1218,28 @@ class ProfileTranslationStage(HarnessStage):
             ctx,
             self.name,
             "generate_model_and_subagent_briefs",
+            inputs=[
+                "agents/main-thread.md",
+                "agents/code-agent.md",
+                "agents/test-agent.md",
+                "agents/validation-agent.md",
+                "agents/checkpoints/code-agent.md",
+                "agents/checkpoints/test-agent.md",
+            ],
             outputs=[
+                "out/MAIN_THREAD_TASK.md",
                 "out/MODEL_TASK.md",
                 "out/TEST_AGENT_TASK.md",
                 "out/VALIDATION_AGENT_TASK.md",
+                "result/harness/agent-entry/manifest.json",
+                "result/harness/agent-entry/main-thread.json",
+                "result/harness/agent-entry/code-agent.json",
+                "result/harness/agent-entry/test-agent.json",
+                "result/harness/agent-entry/validation-agent.json",
                 "result/harness/code-manifest.json",
                 "result/harness/context/manifest.json",
                 "result/harness/test-requirements/manifest.json",
+                "result/harness/04-main-thread-task.md",
                 "result/harness/04-model-generation-brief.md",
                 "result/harness/04-test-agent-task.md",
                 "result/harness/04-validation-agent-task.md",
@@ -1009,9 +1282,14 @@ class ProfileValidationStage(HarnessStage):
             }
         else:
             cargo_test = run_cargo(ctx, ["test"])
+        failures = self._validation_failures(checks, cargo_test, effective)
+        repair_required = self._repair_required(failures, cargo_test)
+        compressed_repair_context = self._write_repair_context(ctx, failures, repair_required, cargo_test)
         ctx.validation_result = {
-            "status": self._validation_status(checks, cargo_test, effective),
-            "failures": self._validation_failures(checks, cargo_test, effective),
+            "status": "failed" if failures else "passed",
+            "failures": failures,
+            "repair_required": repair_required,
+            "compressed_repair_context": compressed_repair_context,
             "checks": checks,
             "cargo_test": cargo_test,
         }
@@ -1026,6 +1304,7 @@ class ProfileValidationStage(HarnessStage):
             failures=len(ctx.validation_result.get("failures", [])),
             cargo_status=ctx.validation_result.get("cargo_test", {}).get("status"),
             output="result/harness/07-validation.json",
+            repair_context="result/harness/08-repair-context/manifest.json",
         )
 
     def _ensure_report_placeholders(self, ctx: ConversionContext) -> None:
@@ -1119,37 +1398,73 @@ class ProfileValidationStage(HarnessStage):
             test_results: dict[str, Any] = {}
             for test_name, spec in tests.items():
                 body = _extract_rust_function_body(text, str(test_name))
+                body_code = self._strip_rust_comments(body)
+                text_code = self._strip_rust_comments(text)
                 validation = spec.get("static_validation", {})
                 required_api_calls = [str(token) for token in validation.get("required_api_calls", [])]
+                required_api_counts = {
+                    str(token): int(count)
+                    for token, count in validation.get("required_api_call_counts", {}).items()
+                }
+                required_expanded_api_calls = [str(token) for token in validation.get("required_expanded_api_calls", [])]
+                required_expanded_api_counts = {
+                    str(token): int(count)
+                    for token, count in validation.get("required_expanded_api_call_counts", {}).items()
+                }
                 required_fields = [str(token) for token in validation.get("required_assertion_fields", [])]
                 required_constants = [str(token) for token in validation.get("required_assertion_constants", [])]
                 required_loop_tokens = [str(token) for token in validation.get("required_loop_tokens", [])]
                 required_literals = [str(token) for token in validation.get("required_representative_literals", [])]
-                assertion_count = len(re.findall(r"\bassert(?:_eq|_ne)?!|\bassert\s*\(", body))
+                required_macro_tokens = [str(token) for token in validation.get("required_macro_expansion_tokens", [])]
+                forbidden_api_calls = [str(token) for token in validation.get("forbidden_api_calls", [])]
+                assertion_count = len(re.findall(r"\bassert(?:_eq|_ne)?!|\bassert\s*\(", body_code))
                 minimum_assertions = int(validation.get("minimum_assertions", 0) or 0)
-                has_loop = bool(re.search(r"\b(?:for|while|loop)\b|\.for_each\s*\(", body))
-                missing_api_calls = [token for token in required_api_calls if token not in body]
-                missing_fields = [token for token in required_fields if token not in body]
-                missing_constants = [token for token in required_constants if token not in body]
-                missing_loop_tokens = [token for token in required_loop_tokens if token not in body]
+                has_loop = bool(re.search(r"\b(?:for|while|loop)\b|\.for_each\s*\(", body_code))
+                missing_api_calls = [token for token in required_api_calls if self._token_count(body_code, token) == 0]
+                missing_api_call_counts = {
+                    token: {"required": count, "actual": self._token_count(body_code, token)}
+                    for token, count in required_api_counts.items()
+                    if self._token_count(body_code, token) < count
+                }
+                missing_expanded_api_calls = [token for token in required_expanded_api_calls if self._token_count(text_code, token) == 0]
+                missing_expanded_api_call_counts = {
+                    token: {"required": count, "actual": self._token_count(text_code, token)}
+                    for token, count in required_expanded_api_counts.items()
+                    if self._token_count(text_code, token) < count
+                }
+                missing_fields = [token for token in required_fields if token not in body_code]
+                missing_constants = [token for token in required_constants if self._token_count(body_code, token) == 0]
+                missing_loop_tokens = [token for token in required_loop_tokens if self._token_count(body_code, token) == 0]
                 missing_literals = [token for token in required_literals if token not in body]
+                missing_macro_tokens = [token for token in required_macro_tokens if self._token_count(text_code, token) == 0]
+                forbidden_present = [token for token in forbidden_api_calls if self._token_count(body_code, token) > 0]
                 test_results[str(test_name)] = {
                     "ok": (
                         bool(body)
                         and not missing_api_calls
+                        and not missing_api_call_counts
+                        and not missing_expanded_api_calls
+                        and not missing_expanded_api_call_counts
                         and not missing_fields
                         and not missing_constants
                         and not missing_loop_tokens
                         and not missing_literals
+                        and not missing_macro_tokens
+                        and not forbidden_present
                         and assertion_count >= minimum_assertions
                         and (has_loop or not validation.get("requires_loop", False))
                     ),
                     "has_body": bool(body),
                     "missing_api_calls": missing_api_calls,
+                    "missing_api_call_counts": missing_api_call_counts,
+                    "missing_expanded_api_calls": missing_expanded_api_calls,
+                    "missing_expanded_api_call_counts": missing_expanded_api_call_counts,
                     "missing_assertion_fields": missing_fields,
                     "missing_assertion_constants": missing_constants,
                     "missing_loop_tokens": missing_loop_tokens,
                     "missing_representative_literals": missing_literals,
+                    "missing_macro_expansion_tokens": missing_macro_tokens,
+                    "forbidden_api_calls_present": forbidden_present,
                     "assertion_count": assertion_count,
                     "minimum_assertions": minimum_assertions,
                     "has_loop": has_loop,
@@ -1174,6 +1489,21 @@ class ProfileValidationStage(HarnessStage):
             return []
         text = path.read_text(encoding="utf-8", errors="ignore")
         return re.findall(r"fn\s+(test_[A-Za-z0-9_]+)\s*\(", text)
+
+    def _token_count(self, text: str, token: str) -> int:
+        if not token:
+            return 0
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token):
+            pattern = rf"(?<![A-Za-z0-9_]){re.escape(token)}(?![A-Za-z0-9_])"
+        elif re.fullmatch(r"\d+", token):
+            pattern = rf"(?<![A-Za-z0-9_]){re.escape(token)}(?![A-Za-z0-9_])"
+        else:
+            pattern = re.escape(token)
+        return len(re.findall(pattern, text))
+
+    def _strip_rust_comments(self, text: str) -> str:
+        text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+        return re.sub(r"//.*", "", text)
 
     def _output_path(self, out: Path, relative: str, default_dir: str) -> Path:
         direct = out / relative
@@ -1223,6 +1553,20 @@ class ProfileValidationStage(HarnessStage):
                     problems.append("missing test body")
                 if result.get("missing_api_calls"):
                     problems.append("missing C API calls: " + ", ".join(result["missing_api_calls"]))
+                if result.get("missing_api_call_counts"):
+                    counts = [
+                        f"{token} {detail.get('actual', 0)} < {detail.get('required', 0)}"
+                        for token, detail in result["missing_api_call_counts"].items()
+                    ]
+                    problems.append("insufficient C API call counts: " + ", ".join(counts))
+                if result.get("missing_expanded_api_calls"):
+                    problems.append("missing helper-expanded API calls: " + ", ".join(result["missing_expanded_api_calls"]))
+                if result.get("missing_expanded_api_call_counts"):
+                    counts = [
+                        f"{token} {detail.get('actual', 0)} < {detail.get('required', 0)}"
+                        for token, detail in result["missing_expanded_api_call_counts"].items()
+                    ]
+                    problems.append("insufficient helper-expanded API call counts: " + ", ".join(counts))
                 if result.get("missing_assertion_fields"):
                     problems.append("missing assertion fields: " + ", ".join(result["missing_assertion_fields"]))
                 if result.get("missing_assertion_constants"):
@@ -1231,6 +1575,10 @@ class ProfileValidationStage(HarnessStage):
                     problems.append("missing loop tokens: " + ", ".join(result["missing_loop_tokens"]))
                 if result.get("missing_representative_literals"):
                     problems.append("missing representative literals: " + ", ".join(result["missing_representative_literals"]))
+                if result.get("missing_macro_expansion_tokens"):
+                    problems.append("missing macro expansion tokens: " + ", ".join(result["missing_macro_expansion_tokens"]))
+                if result.get("forbidden_api_calls_present"):
+                    problems.append("unexpected substitute API calls: " + ", ".join(result["forbidden_api_calls_present"]))
                 if int(result.get("assertion_count", 0) or 0) < int(result.get("minimum_assertions", 0) or 0):
                     problems.append(
                         f"assertions {result.get('assertion_count', 0)} < {result.get('minimum_assertions', 0)}"
@@ -1246,8 +1594,290 @@ class ProfileValidationStage(HarnessStage):
             failures.append(f"cargo test skipped: {cargo_test.get('reason', 'unknown reason')}")
         return failures
 
-    def _validation_status(self, checks: dict[str, Any], cargo_test: dict[str, Any], profile: dict[str, Any]) -> str:
-        return "failed" if self._validation_failures(checks, cargo_test, profile) else "passed"
+    def _repair_required(self, failures: list[str], cargo_test: dict[str, Any]) -> dict[str, Any]:
+        route: dict[str, Any] = {
+            "must_continue": bool(failures),
+            "next_action": "strict validation passed" if not failures else "repair routed failures and rerun strict validation",
+            "compressed_context": "result/harness/08-repair-context/manifest.json",
+            "test_agent": [],
+            "code_agent": [],
+            "validation_agent": [],
+        }
+        for failure in failures:
+            if self._is_test_failure(failure):
+                route["test_agent"].append(failure)
+            elif failure.startswith("cargo test skipped"):
+                route["validation_agent"].append(failure)
+            elif failure == "cargo test failed":
+                route["validation_agent"].append("read cargo test diagnostics and route concrete src/tests failures")
+            else:
+                route["code_agent"].append(failure)
+        if cargo_test.get("status") == "failed" and "cargo test failed" not in failures:
+            route["validation_agent"].append("read cargo test diagnostics and route concrete src/tests failures")
+        return route
+
+    def _write_repair_context(
+        self,
+        ctx: ConversionContext,
+        failures: list[str],
+        repair_required: dict[str, Any],
+        cargo_test: dict[str, Any],
+    ) -> dict[str, Any]:
+        base = ctx.result / "harness" / "08-repair-context"
+        base.mkdir(parents=True, exist_ok=True)
+        agents = ("code_agent", "test_agent", "validation_agent")
+        generated_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        route_files: dict[str, str] = {}
+        route_counts: dict[str, int] = {}
+        for agent in agents:
+            raw_items = [str(item) for item in repair_required.get(agent, [])]
+            items = [self._repair_item(agent, idx + 1, failure) for idx, failure in enumerate(raw_items)]
+            route_counts[agent] = len(items)
+            json_name = f"{agent.replace('_', '-')}.json"
+            md_name = f"{agent.replace('_', '-')}.md"
+            route_files[agent] = f"result/harness/08-repair-context/{json_name}"
+            write(
+                base / json_name,
+                json.dumps(
+                    {
+                        "agent": agent,
+                        "generated_at": generated_at,
+                        "status": "empty" if not items else "repair_required",
+                        "item_count": len(items),
+                        "items": items,
+                        "rules": [
+                            "只读取本文件和每个 item 的 recommended_reads。",
+                            "不要读取完整 result/harness/07-validation.json，除非压缩上下文明确要求。",
+                            "修复后重新运行 strict 验证，由 harness 生成下一轮 repair-context。",
+                        ],
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                ),
+            )
+            write(base / md_name, self._repair_context_markdown(agent, items))
+        next_agent = (
+            "code_agent"
+            if route_counts["code_agent"]
+            else "test_agent"
+            if route_counts["test_agent"]
+            else "validation_agent"
+            if route_counts["validation_agent"]
+            else "none"
+        )
+        manifest = {
+            "description": "自动压缩的多轮修复上下文入口；agent 修复时优先读取本 manifest，再读取对应 agent shard。",
+            "generated_at": generated_at,
+            "status": "passed" if not failures else "repair_required",
+            "source": str(ctx.source),
+            "out": str(ctx.out),
+            "next_agent": next_agent,
+            "counts": route_counts,
+            "routes": route_files,
+            "markdown_routes": {
+                agent: f"result/harness/08-repair-context/{agent.replace('_', '-')}.md"
+                for agent in agents
+            },
+            "cargo_test": {
+                "status": cargo_test.get("status"),
+                "reason": cargo_test.get("reason"),
+                "diagnostics": "result/harness/07-validation.json#cargo_test" if cargo_test.get("status") == "failed" else None,
+            },
+            "rules": [
+                "多轮修复禁止回灌完整 07-validation.json、完整测试矩阵或完整源码上下文。",
+                "Code Agent 只读 code-agent shard 及其中 recommended_reads。",
+                "Test Agent 只读 test-agent shard、目标 target manifest 和单个 semantic shard。",
+                "Validation Agent 只读 validation-agent shard 和必要 cargo 诊断尾部。",
+            ],
+        }
+        write(base / "manifest.json", json.dumps(manifest, indent=2, ensure_ascii=False))
+        write(base / "summary.md", self._repair_manifest_markdown(manifest))
+        return {
+            "manifest": "result/harness/08-repair-context/manifest.json",
+            "summary": "result/harness/08-repair-context/summary.md",
+            "next_agent": next_agent,
+            "counts": route_counts,
+        }
+
+    def _repair_item(self, agent: str, index: int, failure: str) -> dict[str, Any]:
+        item: dict[str, Any] = {
+            "id": f"{agent.replace('_', '-')}-{index:03d}",
+            "agent": agent,
+            "summary": self._compact_failure_text(failure),
+            "failure_excerpt": failure[:900],
+            "recommended_reads": [],
+        }
+        semantic = re.match(r"missing semantic coverage in ([^:]+)::([^:]+):\s*(.*)", failure)
+        if semantic:
+            target = semantic.group(1)
+            test_name = semantic.group(2)
+            detail = semantic.group(3)
+            target_slug = slug(target)
+            test_slug = slug(test_name)
+            item.update(
+                {
+                    "category": "test_semantic_coverage",
+                    "target_file": target,
+                    "test_name": test_name,
+                    "detail": self._compact_problem_detail(detail),
+                    "target_manifest": f"result/harness/test-requirements/{target_slug}.json",
+                    "semantic_shard": f"result/harness/test-requirements/{target_slug}/{test_slug}.json",
+                    "recommended_reads": [
+                        f"result/harness/test-requirements/{target_slug}.json",
+                        f"result/harness/test-requirements/{target_slug}/{test_slug}.json",
+                    ],
+                }
+            )
+            return item
+        readme = re.match(r"missing README/benchmark coverage in ([^:]+):\s*(.*)", failure)
+        if readme:
+            target = readme.group(1)
+            target_slug = slug(target)
+            item.update(
+                {
+                    "category": "readme_or_benchmark_coverage",
+                    "target_file": target,
+                    "detail": self._compact_problem_detail(readme.group(2)),
+                    "target_manifest": f"result/harness/test-requirements/{target_slug}.json",
+                    "recommended_reads": [f"result/harness/test-requirements/{target_slug}.json"],
+                }
+            )
+            return item
+        translated = re.match(r"missing translated ([A-Z0-9_]+) tests:\s*(.*)", failure)
+        if translated:
+            item.update(
+                {
+                    "category": "missing_translated_tests",
+                    "suite": translated.group(1).lower(),
+                    "detail": self._compact_problem_detail(translated.group(2)),
+                    "recommended_reads": ["result/harness/test-requirements/manifest.json"],
+                }
+            )
+            return item
+        if failure.startswith("cargo test skipped"):
+            item.update(
+                {
+                    "category": "validation_environment",
+                    "detail": failure,
+                    "recommended_reads": ["result/harness/08-repair-context/validation-agent.json"],
+                }
+            )
+            return item
+        if failure == "cargo test failed":
+            item.update(
+                {
+                    "category": "cargo_test_failed",
+                    "detail": "读取 cargo_test 的 stdout/stderr 尾部后再按 src/tests 归类。",
+                    "recommended_reads": ["result/harness/07-validation.json"],
+                }
+            )
+            return item
+        generated = re.match(r"missing generated file:\s*(.*)", failure)
+        if generated:
+            item.update(
+                {
+                    "category": "missing_generated_file",
+                    "target_file": generated.group(1),
+                    "recommended_reads": ["result/harness/code-manifest.json"],
+                }
+            )
+            return item
+        api = re.match(r"missing API symbols in ([^:]+):\s*(.*)", failure)
+        if api:
+            item.update(
+                {
+                    "category": "missing_api_symbols",
+                    "target_file": api.group(1),
+                    "detail": self._compact_problem_detail(api.group(2)),
+                    "recommended_reads": ["result/harness/code-manifest.json"],
+                }
+            )
+            return item
+        item["category"] = "generic"
+        return item
+
+    def _compact_problem_detail(self, detail: str) -> list[str]:
+        parts = [part.strip() for part in detail.split(";") if part.strip()]
+        if not parts:
+            return []
+        return [self._compact_failure_text(part) for part in parts[:8]]
+
+    def _compact_failure_text(self, text: str, max_tokens: int = 18, max_chars: int = 240) -> str:
+        if len(text) <= max_chars:
+            return text
+        tokens = [token.strip() for token in re.split(r",\s*", text) if token.strip()]
+        if len(tokens) > max_tokens:
+            return ", ".join(tokens[:max_tokens]) + f", ... (+{len(tokens) - max_tokens} more; read referenced shard)"
+        return text[: max_chars - 3] + "..."
+
+    def _repair_context_markdown(self, agent: str, items: list[dict[str, Any]]) -> str:
+        title = agent.replace("_", " ").title()
+        if not items:
+            return f"# {title} 压缩修复上下文\n\n无待修复项。\n"
+        lines = [
+            f"# {title} 压缩修复上下文",
+            "",
+            "只读取本文件和每项 `recommended_reads` 指向的 shard；不要读取完整 `07-validation.json`。",
+            "",
+        ]
+        for item in items:
+            lines.extend(
+                [
+                    f"## {item['id']}",
+                    "",
+                    f"- 类别：`{item.get('category', 'generic')}`",
+                    f"- 摘要：{item.get('summary', '')}",
+                ]
+            )
+            if item.get("target_file"):
+                lines.append(f"- 文件：`{item['target_file']}`")
+            if item.get("test_name"):
+                lines.append(f"- 测试：`{item['test_name']}`")
+            if item.get("detail"):
+                detail = item["detail"]
+                if isinstance(detail, list):
+                    lines.extend(f"- 细节：{part}" for part in detail)
+                else:
+                    lines.append(f"- 细节：{detail}")
+            reads = item.get("recommended_reads", [])
+            if reads:
+                lines.append("- 必读 shard：" + ", ".join(f"`{path}`" for path in reads))
+            lines.append("")
+        return "\n".join(lines)
+
+    def _repair_manifest_markdown(self, manifest: dict[str, Any]) -> str:
+        counts = manifest.get("counts", {})
+        routes = manifest.get("markdown_routes", {})
+        return "\n".join(
+            [
+                "# 压缩修复上下文",
+                "",
+                f"- 状态：`{manifest.get('status')}`",
+                f"- 下一 agent：`{manifest.get('next_agent')}`",
+                f"- Code Agent 待修复：{counts.get('code_agent', 0)}",
+                f"- Test Agent 待修复：{counts.get('test_agent', 0)}",
+                f"- Validation Agent 待处理：{counts.get('validation_agent', 0)}",
+                "",
+                "## 路由",
+                "",
+                f"- Code Agent：`{routes.get('code_agent')}`",
+                f"- Test Agent：`{routes.get('test_agent')}`",
+                f"- Validation Agent：`{routes.get('validation_agent')}`",
+                "",
+                "修复轮次只读对应路由文件及其 recommended_reads，避免上下文持续膨胀。",
+                "",
+            ]
+        )
+
+    def _is_test_failure(self, failure: str) -> bool:
+        if "tests/" in failure or "tests\\" in failure:
+            return True
+        return failure.startswith(
+            (
+                "missing translated ",
+                "missing README/benchmark coverage",
+            )
+        )
 
     def _append_harness_report(self, ctx: ConversionContext) -> None:
         report = ctx.result / "output.md"
@@ -1267,7 +1897,7 @@ class ProfileValidationStage(HarnessStage):
             - SkeletonGenerationStage：准备 Cargo crate 布局。
             - ContextBuilderStage：生成模块/函数上下文。
             - ParityMatrixStage：生成 profile 提供的 parity 矩阵。
-            - TranslationStage：生成 Code Agent、Test Agent 和 Validation Agent 任务书。
+            - TranslationStage：从 agents/ 固定模板渲染 Main Thread、Code Agent、Test Agent 和 Validation Agent 任务书。
             - CompileStage：Cargo 可用时记录 `cargo check` 诊断。
             - RepairStage：整理编译结果和修复判断。
             - ValidationStage：执行 profile 驱动的验证门禁。
