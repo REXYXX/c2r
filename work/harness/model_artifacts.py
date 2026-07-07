@@ -13,12 +13,13 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import textwrap
 from typing import Any
 
 SOURCE_CONTEXT_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".hh", ".inc"}
 FUNCTION_HINT_CHUNK_SIZE = 12
-TEST_BATCH_SIZE = 3
+TEST_BATCH_SIZE = 5
 AGENT_PLACEHOLDER_RE = re.compile(r"\{\{([A-Za-z0-9_]+)\}\}")
 
 
@@ -49,7 +50,7 @@ def write_json(path: Path, value: Any) -> None:
 
 
 def render_agent_template(root: Path, template_name: str, values: dict[str, Any]) -> str:
-    template_path = root / "agents" / template_name
+    template_path = root / "work" / "agents" / template_name
     template = template_path.read_text(encoding="utf-8")
     rendered = template
     for key, value in values.items():
@@ -141,19 +142,16 @@ def generate_workspace_scaffold(out: Path, profile: dict[str, Any] | None = None
 
 def write_context_shards(result: Path, context_index: dict[str, Any]) -> dict[str, Any]:
     base = result / "harness" / "context"
+    if base.exists():
+        shutil.rmtree(base)
     compact_base = base / "modules"
     module_contexts = context_index.get("module_contexts", {}) or {}
     function_hints = context_index.get("function_hints", []) or []
     public_apis = context_index.get("public_apis", []) or []
     internal_anchors = context_index.get("internal_parity_anchors", {}) or {}
     manifest: dict[str, Any] = {
-        "description": "Code Agent 上下文索引；默认读取 compact_manifest，不读取 legacy full shard。",
-        "rules": [
-            "优先读取 result/harness/agent-entry/code-agent.json。",
-            "每次只处理一个 module compact_manifest。",
-            "函数提示按 function_hint_chunks 分批读取，每批最多 12 项。",
-            "legacy_full_shard 仅用于人工调试，不进入模型上下文。",
-        ],
+        "description": "源码上下文索引。",
+        "policy_doc": "work/agents/code-agent.md",
         "modules": {},
         "global": {
             "public_apis": "result/harness/context/public-apis.json",
@@ -179,11 +177,6 @@ def write_context_shards(result: Path, context_index: dict[str, Any]) -> dict[st
                     "chunk": index,
                     "chunk_count": len(hint_chunks),
                     "function_hints": hint_chunk,
-                    "rules": [
-                        "只在实现本 chunk 中相关函数时读取。",
-                        "优先使用每个 function_hint 的 excerpt，避免打开完整 C 源文件。",
-                        "读完并完成局部实现后丢弃本 chunk 上下文。",
-                    ],
                 },
             )
             function_chunk_index.append(
@@ -217,11 +210,7 @@ def write_context_shards(result: Path, context_index: dict[str, Any]) -> dict[st
                 "required_mechanisms": spec.get("required_mechanisms", []),
                 "function_hint_chunks": function_chunk_index,
                 "legacy_full_shard": shard_relative,
-                "rules": [
-                    "这是 Code Agent 默认模块入口。",
-                    "不要读取 legacy_full_shard，除非 compact chunks 不足以定位问题。",
-                    "不要读取 tests/*.rs 或 test-requirements；测试交给 Test Agent。",
-                ],
+                "policy_doc": "work/agents/code-agent.md",
             },
         )
         manifest["modules"][str(module)] = {
@@ -240,7 +229,8 @@ def write_context_shards(result: Path, context_index: dict[str, Any]) -> dict[st
 
 def compact_context_index(context_index: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
     return {
-        "description": "完整上下文已拆分到 result/harness/context/；Code Agent 只按模块读取 shard。",
+        "description": "完整上下文已拆分到 result/harness/context/。",
+        "policy_doc": "work/agents/code-agent.md",
         "manifest": "result/harness/context/manifest.json",
         "module_count": len((context_index.get("module_contexts", {}) or {})),
         "function_hint_count": len((context_index.get("function_hints", []) or [])),
@@ -250,12 +240,140 @@ def compact_context_index(context_index: dict[str, Any], manifest: dict[str, Any
     }
 
 
+def _module_from_target(target: str) -> str:
+    path = Path(target)
+    return path.stem if path.suffix else str(target)
+
+
+def _assign_public_apis_to_modules(profile: dict[str, Any], context_index: dict[str, Any]) -> dict[str, list[str]]:
+    source_to_modules = {
+        str(source): [str(target) for target in targets]
+        for source, targets in (profile.get("source_to_rust_modules", {}) or {}).items()
+    }
+    public_apis = set((profile.get("c_api_parity_symbols", {}) or {}).get("public_api", []) or [])
+    if not public_apis:
+        public_apis = set(context_index.get("public_apis", []) or [])
+    assigned: dict[str, set[str]] = {}
+    for hint in context_index.get("function_hints", []) or []:
+        name = hint_name(hint)
+        if not name or name not in public_apis:
+            continue
+        if hint.get("kind") != "definition":
+            continue
+        hint_file = str(hint.get("file", ""))
+        if not hint_file.startswith("src/"):
+            continue
+        for target in source_to_modules.get(hint_file, []):
+            assigned.setdefault(_module_from_target(target), set()).add(name)
+
+    def add(module: str, api: str) -> None:
+        assigned.setdefault(module, set()).add(api)
+
+    for api in public_apis:
+        if any(api in values for values in assigned.values()):
+            continue
+        if api.startswith(("fdb_kvdb_", "fdb_kv_", "fdb_blob_")):
+            add("kvdb", api)
+        elif api.startswith(("fdb_tsdb_", "fdb_tsl_")):
+            add("tsdb", api)
+        elif api.startswith("fdb_calc_"):
+            add("utils", api)
+        else:
+            add("flashdb", api)
+    return {module: sorted(values) for module, values in sorted(assigned.items())}
+
+
+def write_code_plan(
+    result: Path,
+    implementation_files: list[str],
+    profile: dict[str, Any],
+    context_manifest: dict[str, Any],
+    context_index: dict[str, Any],
+) -> dict[str, Any]:
+    module_apis = _assign_public_apis_to_modules(profile, context_index)
+    modules: dict[str, Any] = {}
+    module_contexts = context_index.get("module_contexts", {}) or {}
+    all_function_hints = context_index.get("function_hints", []) or []
+    for module, spec in sorted((context_manifest.get("modules", {}) or {}).items()):
+        context = module_contexts.get(module, {}) if isinstance(module_contexts, dict) else {}
+        source_files = source_context_files([str(item) for item in context.get("source_hints", [])])
+        source_set = set(source_files)
+        function_hint_count = sum(1 for hint in all_function_hints if str(hint.get("file", "")) in source_set)
+        modules[str(module)] = {
+            "target": spec.get("target"),
+            "compact_manifest": spec.get("compact_manifest"),
+            "public_api_surface": module_apis.get(str(module), []),
+            "source_files": source_files,
+            "function_hint_chunks": (function_hint_count + FUNCTION_HINT_CHUNK_SIZE - 1) // FUNCTION_HINT_CHUNK_SIZE,
+        }
+    plan = {
+        "description": "压缩实现蓝图。",
+        "policy_doc": "work/agents/code-agent.md",
+        "phase_order": [
+            {
+                "phase": "crate_skeleton",
+                "goal": "创建所有 implementation_files，并让 src/lib.rs 暴露 api_symbols 中的模块声明。",
+                "inputs": ["result/harness/code-plan.json", "result/harness/code-manifest.json"],
+            },
+            {
+                "phase": "public_api_surface",
+                "goal": "按每个模块 public_api_surface 先实现可编译 API 表面和核心数据类型。",
+                "inputs": ["result/harness/code-plan.json", "result/harness/context/modules/<module>/manifest.json"],
+            },
+            {
+                "phase": "module_behaviour",
+                "goal": "仅对缺口模块读取一个 function chunk，补齐可观察行为。",
+                "inputs": ["单个 compact_manifest", "单个 functions-NNN.json"],
+                "checkpoint": "result/harness/context-checkpoints/code-agent.md",
+            },
+            {
+                "phase": "handoff",
+                "goal": "cargo check 可用时先自检，再交给 Test Agent 和 Validation Agent。",
+                "inputs": ["result/harness/agent-entry/test-agent.json", "result/harness/agent-entry/validation-agent.json"],
+            },
+        ],
+        "implementation_files": implementation_files,
+        "api_symbols": profile.get("api_symbols", {}),
+        "modules": modules,
+    }
+    write_json(result / "harness" / "code-plan.json", plan)
+    return {
+        "path": "result/harness/code-plan.json",
+        "modules": len(modules),
+        "public_api_surface": sum(len(item.get("public_api_surface", [])) for item in modules.values()),
+    }
+
+
+def compact_semantic_requirement(spec: dict[str, Any]) -> dict[str, Any]:
+    logic = spec.get("logic_consistency", {}) if isinstance(spec, dict) else {}
+    observations = spec.get("source_observations", {}) if isinstance(spec, dict) else {}
+    validation = spec.get("static_validation", {}) if isinstance(spec, dict) else {}
+    return {
+        "requirements": spec.get("requirements", []) if isinstance(spec, dict) else [],
+        "logic_consistency": logic,
+        "static_validation": {
+            "required_api_calls": validation.get("required_api_calls", []),
+            "required_expanded_api_calls": validation.get("required_expanded_api_calls", []),
+            "forbidden_api_calls": validation.get("forbidden_api_calls", []),
+            "minimum_assertions": validation.get("minimum_assertions", 0),
+        },
+        "source_observations": {
+            "public_api_calls": observations.get("public_api_calls", []),
+            "assertion_count": observations.get("assertion_count", 0),
+            "loop_count": observations.get("loop_count", 0),
+            "representative_literals": observations.get("representative_literals", []),
+        },
+    }
+
+
 def write_test_requirement_shards(
     result: Path,
     profile: dict[str, Any],
     analysis: dict[str, Any],
 ) -> dict[str, Any]:
     base = result / "harness" / "test-requirements"
+    if base.exists():
+        shutil.rmtree(base)
     readme_coverage = profile.get("readme_test_coverage", {}) or {}
     required_rust_tests = readme_coverage.get("required_rust_tests", {}) or {}
     benchmark = readme_coverage.get("benchmark", {}) if isinstance(readme_coverage, dict) else {}
@@ -270,13 +388,9 @@ def write_test_requirement_shards(
         | {str(spec.get("target")) for spec in test_suites.values() if spec.get("target")}
     )
     manifest: dict[str, Any] = {
-        "description": "Test Agent 入口索引；按目标测试文件读取 target manifest，再按单个测试读取 semantic shard。",
-        "rules": [
-            "优先读取 result/harness/agent-entry/test-agent.json。",
-            "不要一次性读取 result/harness/01-effective-profile.json 或 01-analysis.json。",
-            "不要把所有 semantic shard 同时展开到同一个上下文。",
-            "每次只处理一个 batch；每个 batch 最多 3 个测试用例。",
-        ],
+        "description": "测试需求索引。",
+        "policy_doc": "work/agents/test-agent.md",
+        "batch_size": TEST_BATCH_SIZE,
         "targets": {},
     }
     for target in targets:
@@ -292,7 +406,7 @@ def write_test_requirement_shards(
                 {
                     "target": target,
                     "test": test_name,
-                    "semantic_requirement": spec,
+                    "semantic_requirement": compact_semantic_requirement(spec),
                 },
             )
             observations = spec.get("source_observations", {}) if isinstance(spec, dict) else {}
@@ -333,11 +447,6 @@ def write_test_requirement_shards(
                     "batch": batch_number,
                     "batch_count": (len(required_tests) + TEST_BATCH_SIZE - 1) // TEST_BATCH_SIZE if required_tests else 0,
                     "items": batch_items,
-                    "rules": [
-                        "只读取本 batch 中 item 指向的 semantic_shard。",
-                        "完成本 batch 后丢弃上下文，再处理下一 batch。",
-                        "不要读取同一 target 的所有 semantic shard。",
-                    ],
                 },
             )
             batch_index.append(
@@ -355,12 +464,7 @@ def write_test_requirement_shards(
             "required_rust_tests": required_tests,
             "batches": batch_index,
             "semantic_requirements_index": semantic_index,
-            "rules": [
-                "先用 required_rust_tests 建立完整 #[test] 清单。",
-                "按 batches 顺序处理，每次只展开一个 batch。",
-                "对 batch 中每个测试读取对应 semantic shard，覆盖 C 源测试抽取出的 API、断言、循环规模和代表性数据。",
-                "同名空壳测试或只覆盖 happy path 不合格。",
-            ],
+            "policy_doc": "work/agents/test-agent.md",
         }
         if isinstance(benchmark, dict) and benchmark.get("rust_target") == target:
             target_manifest["benchmark"] = benchmark
@@ -387,29 +491,26 @@ def write_code_manifest(
     context_manifest: dict[str, Any],
 ) -> dict[str, Any]:
     manifest = {
-        "description": "Code Agent 最小实现入口；按模块读取 compact context，不读取完整测试矩阵。",
+        "description": "Rust 实现索引。",
+        "policy_doc": "work/agents/code-agent.md",
         "implementation_files": implementation_files,
         "test_files": test_files,
         "source_to_rust_modules": profile.get("source_to_rust_modules", {}),
         "api_symbols": profile.get("api_symbols", {}),
         "one_to_one_features": profile.get("one_to_one_features", {}),
         "behaviour_model_rejection": profile.get("behaviour_model_rejection", {}),
+        "code_plan": "result/harness/code-plan.json",
         "context_manifest": "result/harness/context/manifest.json",
         "compact_context_manifest": "result/harness/context/manifest.json",
         "context_modules": context_manifest.get("modules", {}),
         "parity_matrix": "result/harness/04-function-parity.json",
-        "rules": [
-            "只实现 Cargo.toml 和 src/*.rs。",
-            "不要读取完整测试矩阵；测试交给 Test Agent。",
-            "实现某个 src/*.rs 前，只读取对应 compact_manifest。",
-            "函数提示按 function_hint_chunks 分批读取；不要读取 legacy_full_shard。",
-        ],
     }
     write_json(result / "harness" / "code-manifest.json", manifest)
     return {
         "path": "result/harness/code-manifest.json",
         "implementation_files": len(implementation_files),
         "context_modules": len(context_manifest.get("modules", {})),
+        "code_plan": "result/harness/code-plan.json",
         "parity_matrix": "result/harness/04-function-parity.json",
     }
 
@@ -417,167 +518,36 @@ def write_code_manifest(
 def write_agent_entries(
     root: Path,
     result: Path,
-    source: Path,
     out: Path,
     code_manifest_summary: dict[str, Any],
     test_requirement_summary: dict[str, Any],
 ) -> dict[str, str]:
     base = result / "harness" / "agent-entry"
-    checkpoint_base = result / "harness" / "context-checkpoints"
-    write_if_missing(
-        checkpoint_base / "code-agent.md",
-        render_agent_template(root, "checkpoints/code-agent.md", {}),
-    )
-    write_if_missing(
-        checkpoint_base / "test-agent.md",
-        render_agent_template(root, "checkpoints/test-agent.md", {}),
-    )
+    stale_checkpoints = result / "harness" / "context-checkpoints"
+    if stale_checkpoints.exists():
+        shutil.rmtree(stale_checkpoints)
     entries = {
         "main-thread": {
             "agent": "main_thread",
-            "purpose": "只负责编排、分发和审计 trace；不读取项目源码，不生成 Rust 代码。",
-            "source_doc": "agents/main-thread.md",
+            "source_doc": "work/agents/main-thread.md",
             "rendered_task": str(out / "MAIN_THREAD_TASK.md"),
-            "read_order": [
-                str(out / "MAIN_THREAD_TASK.md"),
-                "result/harness/agent-entry/manifest.json",
-                "result/harness/agent-entry/code-agent.json",
-                "result/harness/agent-entry/test-agent.json",
-                "result/harness/agent-entry/validation-agent.json",
-                "logs/trace/profile-harness-path.md",
-                "result/harness/08-repair-context/manifest.json if present",
-            ],
-            "allowed_reads": [
-                "INSTRUCTION.md",
-                str(out / "MAIN_THREAD_TASK.md"),
-                "result/harness/agent-entry/*.json",
-                "logs/trace/profile-harness-path.json",
-                "logs/trace/profile-harness-path.md",
-                "result/harness/08-repair-context/manifest.json",
-                "result/harness/08-repair-context/summary.md",
-                "result/harness/08-repair-context/*-agent.json",
-                "result/harness/08-repair-context/*-agent.md",
-                "result/harness/context-checkpoints/*.md",
-                "result/issues/00-summary.md",
-                "result/output.md",
-            ],
-            "forbidden_reads": [
-                str(source),
-                str(out / "src"),
-                str(out / "tests"),
-                str(out / "target"),
-                str(out / "MODEL_TASK.md"),
-                str(out / "TEST_AGENT_TASK.md"),
-                str(out / "VALIDATION_AGENT_TASK.md"),
-                "result/harness/01-analysis.json",
-                "result/harness/01-effective-profile.json",
-                "result/harness/01-effective-profile.md",
-                "result/harness/03-context.json",
-                "result/harness/07-validation.json",
-                "result/harness/context/**/*.json except context-checkpoints",
-                "result/harness/test-requirements/**/*.json",
-            ],
-            "handoff_order": [
-                {
-                    "to": "code_agent",
-                    "entry": "result/harness/agent-entry/code-agent.json",
-                    "task": str(out / "MODEL_TASK.md"),
-                    "owns": ["Cargo.toml", "src/*.rs"],
-                },
-                {
-                    "to": "test_agent",
-                    "entry": "result/harness/agent-entry/test-agent.json",
-                    "task": str(out / "TEST_AGENT_TASK.md"),
-                    "owns": ["tests/*.rs", "test fixtures"],
-                },
-                {
-                    "to": "validation_agent",
-                    "entry": "result/harness/agent-entry/validation-agent.json",
-                    "task": str(out / "VALIDATION_AGENT_TASK.md"),
-                    "owns": ["strict validation", "compressed repair context"],
-                },
-            ],
-            "rule_source": "agents/main-thread.md",
         },
         "code-agent": {
             "agent": "code_agent",
-            "purpose": "实现或修复 Cargo.toml 与 src/*.rs，测试交给 Test Agent。",
-            "owner": "subagent",
-            "source_doc": "agents/code-agent.md",
+            "source_doc": "work/agents/code-agent.md",
             "rendered_task": str(out / "MODEL_TASK.md"),
-            "read_order": [
-                str(out / "MODEL_TASK.md"),
-                "result/harness/code-manifest.json",
-                "result/harness/context/manifest.json",
-            ],
-            "context_budget": {
-                "max_files_per_turn": 6,
-                "max_function_hint_chunks_per_turn": 1,
-                "reset_after_module": True,
-            },
-            "checkpoint": "result/harness/context-checkpoints/code-agent.md",
-            "allowed_large_reads": [],
-            "forbidden_reads": [
-                "result/harness/01-analysis.json",
-                "result/harness/01-effective-profile.json",
-                "result/harness/01-effective-profile.md",
-                "result/harness/07-validation.json",
-                "result/harness/context/*.json legacy_full_shard",
-                str(out / "target"),
-                str(out / "tests"),
-            ],
-            "handoff_rule_source": "agents/main-thread.md",
             "summary": code_manifest_summary,
         },
         "test-agent": {
             "agent": "test_agent",
-            "purpose": "生成或修复 tests/*.rs；按 batch 和 semantic shard 渐进读取。",
-            "owner": "subagent",
-            "source_doc": "agents/test-agent.md",
+            "source_doc": "work/agents/test-agent.md",
             "rendered_task": str(out / "TEST_AGENT_TASK.md"),
-            "read_order": [
-                str(out / "TEST_AGENT_TASK.md"),
-                "result/harness/test-requirements/manifest.json",
-                "result/harness/08-repair-context/manifest.json if present",
-            ],
-            "context_budget": {
-                "max_target_files_per_turn": 1,
-                "max_batches_per_turn": 1,
-                "max_tests_per_batch": TEST_BATCH_SIZE,
-                "reset_after_batch": True,
-            },
-            "checkpoint": "result/harness/context-checkpoints/test-agent.md",
-            "allowed_large_reads": [],
-            "forbidden_reads": [
-                "result/harness/01-analysis.json",
-                "result/harness/01-effective-profile.json",
-                "result/harness/07-validation.json",
-                "all files under result/harness/test-requirements/** at once",
-                str(out / "src"),
-                str(out / "target"),
-            ],
-            "handoff_rule_source": "agents/main-thread.md",
             "summary": test_requirement_summary,
         },
         "validation-agent": {
             "agent": "validation_agent",
-            "purpose": "运行 strict 验证，回传 08-repair-context 压缩路由。",
-            "owner": "subagent",
-            "source_doc": "agents/validation-agent.md",
+            "source_doc": "work/agents/validation-agent.md",
             "rendered_task": str(out / "VALIDATION_AGENT_TASK.md"),
-            "read_order": [
-                str(out / "VALIDATION_AGENT_TASK.md"),
-                "result/harness/08-repair-context/manifest.json after validation",
-            ],
-            "context_budget": {
-                "return_only_repair_context": True,
-                "max_log_tail_chars": 8000,
-            },
-            "forbidden_reads": [
-                "full cargo stdout/stderr beyond tail",
-                "full result/harness/01-analysis.json",
-            ],
-            "handoff_rule_source": "agents/main-thread.md",
         },
     }
     paths: dict[str, str] = {}
@@ -588,18 +558,15 @@ def write_agent_entries(
     write_json(
         base / "manifest.json",
         {
-            "description": "最小 agent 入口。主线程先读 main-thread.json；子 agent 再按各自 read_order 读取下一层小文件。",
+            "description": "最小 agent 入口索引。固定规则只维护在 work/agents/*.md 渲染出的任务书中。",
             "entries": paths,
             "start_here": "result/harness/agent-entry/main-thread.json",
             "source_docs": {
-                "main-thread": "agents/main-thread.md",
-                "code-agent": "agents/code-agent.md",
-                "test-agent": "agents/test-agent.md",
-                "validation-agent": "agents/validation-agent.md",
-                "code-agent-checkpoint": "agents/checkpoints/code-agent.md",
-                "test-agent-checkpoint": "agents/checkpoints/test-agent.md",
+                "main-thread": "work/agents/main-thread.md",
+                "code-agent": "work/agents/code-agent.md",
+                "test-agent": "work/agents/test-agent.md",
+                "validation-agent": "work/agents/validation-agent.md",
             },
-            "rule_source": "agents/README.md",
         },
     )
     return paths
@@ -662,6 +629,7 @@ def generate_model_brief(
             for name, spec in sorted((context_index.get("module_contexts", {}) or {}).items())
         }
     }
+    code_plan_summary = write_code_plan(result, implementation_files, profile, context_manifest, context_index)
     code_manifest_summary = write_code_manifest(
         result,
         implementation_files,
@@ -683,7 +651,7 @@ def generate_model_brief(
             for target, spec in test_requirement_manifest.get("targets", {}).items()
         },
     }
-    agent_entries = write_agent_entries(root, result, source, out, code_manifest_summary, test_requirement_summary)
+    agent_entries = write_agent_entries(root, result, out, code_manifest_summary, test_requirement_summary)
 
     template_values = {
         "project": project,
@@ -710,6 +678,7 @@ def generate_model_brief(
         "repair_manifest": result / "harness" / "08-repair-context" / "manifest.json",
         "validation_json": result / "harness" / "07-validation.json",
         "issue_summary": result / "issues" / "00-summary.md",
+        "code_plan_path": result / "harness" / "code-plan.json",
         "code_manifest_path": result / "harness" / "code-manifest.json",
         "context_manifest_path": result / "harness" / "context" / "manifest.json",
         "test_requirements_manifest": result / "harness" / "test-requirements" / "manifest.json",
@@ -717,6 +686,7 @@ def generate_model_brief(
         "constraint_files_bullets": bullets(constraint_files),
         "required_test_files_bullets": bullets(test_files),
         "agent_entries_json": json_block(agent_entries),
+        "code_plan_summary_json": json_block(code_plan_summary),
         "code_manifest_summary_json": json_block(code_manifest_summary),
         "test_summary_json": json_block(test_summary),
         "context_summary_json": json_block(context_summary),

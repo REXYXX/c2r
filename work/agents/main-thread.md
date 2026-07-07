@@ -12,7 +12,7 @@
 
 ## 允许动作
 
-- 运行 bootstrap harness，让 Python 扫描源码并生成动态 profile、manifest 和任务书。
+- 运行 bootstrap harness，让 Python 扫描源码并生成轻量摘要、manifest 和任务书。
 - 把 `agent-entry/code-agent.json` 与 `MODEL_TASK.md` 交给 Code Agent。
 - 把 `agent-entry/test-agent.json` 与 `TEST_AGENT_TASK.md` 交给 Test Agent。
 - 把 `agent-entry/validation-agent.json` 与 `VALIDATION_AGENT_TASK.md` 交给 Validation Agent。
@@ -27,7 +27,8 @@
 - 不要读取 Code Agent 任务书正文：`{{model_task}}`；只把路径交给 Code Agent。
 - 不要读取 Test Agent 任务书正文：`{{test_agent_task}}`；只把路径交给 Test Agent。
 - 不要读取 Validation Agent 任务书正文：`{{validation_agent_task}}`；只把路径交给 Validation Agent。
-- 不要读取 `01-analysis.json`、`01-effective-profile.*`、完整 `07-validation.json`、完整 context 或完整测试矩阵。
+- 全量 analysis/profile 文件默认不生成；不要请求或构造这类大文件。
+- 不要读取完整 `07-validation.json`、完整 context 或完整测试矩阵。
 - 不要在主线程里写 Rust 代码、Rust 测试或根据错误日志直接修复源码。
 
 ## 固定分发顺序

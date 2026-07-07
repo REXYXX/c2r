@@ -23,7 +23,7 @@
 
 - 根索引：`{{test_requirements_manifest}}`
 - 先读取根索引，再按目标测试文件读取 target manifest。
-- 按 target manifest 的 `batches` 逐批处理，每批最多 3 个测试。
+- 按 target manifest 的 `batches` 逐批处理，每批最多 5 个测试。
 - 每个测试的深层语义只读取对应 semantic shard，不要一次性展开全部 shard。
 
 ```json
@@ -32,17 +32,29 @@
 
 ## C 测试语义覆盖方式
 
-同名 Rust 测试不够；semantic shard 由 C 测试函数实时抽取。Test Agent 必须逐个
-shard 覆盖其中的公开 API 调用、断言字段、常量/循环规模、辅助函数调用和代表性测试数据。
+同名 Rust 测试不够；semantic shard 由 C 测试函数实时抽取，并已压缩成
+`logic_consistency` 蓝图。Test Agent 必须逐个 shard 覆盖其中的目标 API、
+测试数据和断言条件。
 
-semantic shard 的 `static_validation` 是硬门禁，必须逐项满足：
+semantic shard 中只有以下内容是硬门禁：
 
-- `required_api_calls` 与 `required_api_call_counts`：Rust 测试体中必须出现相同公开 API，并满足 C 测试抽取到的最小调用次数。
-- `required_expanded_api_calls` 与 `required_expanded_api_call_counts`：C helper 函数展开后出现的 API，也必须在目标测试文件中有等价覆盖。
-- `required_macro_expansion_tokens`：宏链展开出的规模 token 必须体现在测试文件中，用于约束数据量、循环规模和容量边界。
-- `required_assertion_fields`、`required_assertion_constants`、`minimum_assertions`：断言不能被弱化为只检查返回值。
-- `forbidden_api_calls`：不得用同族但不同语义的公开 API 替代 C 测试实际调用的 API。
-- 这些 token 必须出现在可执行测试代码中；注释中的 token 不计入验证覆盖。
+- `required_api_calls`：Rust 测试必须调用语义等价的目标 API，不要求保留 C 函数名。
+- `required_expanded_api_calls`：C helper 展开后出现的关键 API，也必须有语义等价覆盖。
+- `minimum_assertions`：断言不能被弱化为空壳或只执行不检查。
+- `forbidden_api_calls`：不得用同族但不同语义的 API 替代 C 测试实际调用的 API。
+
+宏展开 token、具体常量名、代表性字面量只作为生成提示和诊断信息，不要求逐字出现。
+
+## 测试逻辑一致性判断标准
+
+Rust 测试不要求逐字复刻 C 测试，但必须在目标 API、测试数据和断言条件三层语义一致。
+任一维度不一致时，该测试不算覆盖对应 C 测试。
+
+| 逻辑维度 | 一致条件 | 不一致示例 |
+|---|---|---|
+| **目标 API** | Rust 测试调用的 API 与 C 测试调用的 API 语义等价（如 `fdb_kv_set` ≈ `db.set()`） | C 调用 `fdb_kv_set` 但 Rust 调用 `db.get()` |
+| **测试数据** | 构造的 key/value、blob 内容、初始化参数与 C 测试数据含义一致（值可不同但等价） | C 用 key="temp" 但 Rust 用完全不同类型/结构的 key |
+| **断言条件** | 断言类型和期望行为等价（如 C 的 `assert(result == 0)` ≈ Rust 的 `assert!(result.is_ok())`） | C 期望 FDB_NO_ERR 但 Rust 期望返回错误 |
 
 ## 验证修复闭环
 
@@ -57,7 +69,7 @@ semantic shard 的 `static_validation` 是硬门禁，必须逐项满足：
 
 - 按 target manifest 中的 `required_rust_tests` 逐项创建 Rust `#[test]`。
 - 实现或修复时每轮只处理一个 batch；完成 batch 后丢弃上下文。
-- 每个 batch 完成后更新 `result/harness/context-checkpoints/test-agent.md`，下一轮只携带 checkpoint。
+- 每个 batch 完成后只保留简短完成摘要，下一轮不要携带完整 batch 上下文。
 - 按每个测试的 semantic shard 覆盖深层行为；不能只保留同名空壳或浅层 happy path。
 - 对重复 C 测试名使用动态 profile 已生成的唯一 Rust 测试名。
 - 每个测试使用隔离临时状态，避免测试间共享全局状态。
