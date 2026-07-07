@@ -14,16 +14,14 @@ python3 work/run_conversion.py \
   --logs logs
 ```
 
-bootstrap 只生成轻量 profile 摘要、agent 入口、任务书、上下文 shard、测试 shard 和 trace，不开始写 Rust。
+bootstrap 只生成轻量 profile 摘要、agent 入口、任务书、测试需求文件和 trace，不开始写 Rust。
 
 bootstrap 后必须存在：
 
 ```text
-result/harness/agent-entry/main-thread.json
 result/harness/agent-entry/code-agent.json
 result/harness/agent-entry/test-agent.json
 result/harness/agent-entry/validation-agent.json
-flashDB_rust/MAIN_THREAD_TASK.md
 result/MODEL_TASK.md
 result/TEST_AGENT_TASK.md
 result/VALIDATION_AGENT_TASK.md
@@ -45,12 +43,11 @@ logs/trace/profile-harness-path.md
 
 ## 2. 固定顺序
 
-1. 主线程读取 `result/harness/agent-entry/main-thread.json` 和 `flashDB_rust/MAIN_THREAD_TASK.md`。
-2. 主线程检查 `logs/trace/profile-harness-path.md`，确认 bootstrap 只完成到 `TranslationStage`。
-3. 主线程启动 `codeagent` subagent。
-4. Code Agent 完成后，主线程启动 `testagent` subagent。
-5. Test Agent 完成后，主线程启动 `validationagent` subagent。
-6. strict 失败时，主线程只读取 `result/harness/08-repair-context/manifest.json` 并按 `next_agent` 分发。
+1. 主线程检查 `logs/trace/profile-harness-path.md`，确认 bootstrap 只完成到 `TranslationStage`。
+2. 主线程启动 `codeagent` subagent。
+3. Code Agent 完成后，主线程启动 `testagent` subagent。
+4. Test Agent 完成后，主线程启动 `validationagent` subagent。
+5. strict 失败时，主线程读取 `result/harness/07-validation.json` 的 `repair_required` 并按路由分发。
 
 ## 3. 完成判定
 

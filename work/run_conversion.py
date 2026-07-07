@@ -68,18 +68,15 @@ def main() -> int:
     print(f"生成的 Rust 项目：{ctx.out}")
     print(f"执行框架产物：{ctx.result / 'harness'}")
     print(f"profile 摘要：{ctx.result / 'harness' / '01-profile-summary.md'}")
-    print(f"主线程任务书：{ctx.out / 'MAIN_THREAD_TASK.md'}")
     print(f"Code Agent 任务书：{ctx.result / 'MODEL_TASK.md'}")
     print(f"Test Agent 任务书：{ctx.result / 'TEST_AGENT_TASK.md'}")
     print(f"Validation Agent 任务书：{ctx.result / 'VALIDATION_AGENT_TASK.md'}")
-    print(f"主线程入口：{ctx.result / 'harness' / 'agent-entry' / 'main-thread.json'}")
     print(f"Code Agent 入口：{ctx.result / 'harness' / 'agent-entry' / 'code-agent.json'}")
     print(f"日志产物：{ctx.logs}")
     if include_validation:
         print(f"验证文件：{ctx.result / 'harness' / '07-validation.json'}")
         print(f"验证状态：{validation_status}")
         repair_required = ctx.validation_result.get("repair_required", {})
-        compressed = ctx.validation_result.get("compressed_repair_context", {})
         if repair_required:
             print(
                 "修复路由："
@@ -87,8 +84,6 @@ def main() -> int:
                 f"Code Agent {len(repair_required.get('code_agent', []))} 项，"
                 f"Validation Agent {len(repair_required.get('validation_agent', []))} 项"
             )
-        if compressed:
-            print(f"压缩修复上下文：{ctx.root / compressed.get('manifest', 'result/harness/08-repair-context/manifest.json')}")
     else:
         print("验证阶段：未运行（bootstrap 阶段只生成任务书和轻量 profile 摘要）")
     if args.strict and validation_status != "passed":

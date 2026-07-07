@@ -52,6 +52,11 @@ LEGACY_TRACE_ARTIFACTS = (
 
 LEGACY_HARNESS_ARTIFACTS = (
     "00-events.json",
+    "03-context.json",
+)
+
+LEGACY_HARNESS_DIRECTORIES = (
+    "context",
 )
 
 
@@ -66,7 +71,6 @@ class ConversionContext:
     skip_cargo: bool = False
     profile: str = "generic"
     analysis: dict[str, Any] = field(default_factory=dict)
-    context_index: dict[str, Any] = field(default_factory=dict)
     compile_result: dict[str, Any] = field(default_factory=dict)
     validation_result: dict[str, Any] = field(default_factory=dict)
     constraints: list[dict[str, Any]] = field(default_factory=list)
@@ -139,6 +143,10 @@ class OutputScaffoldStage(HarnessStage):
             path = ctx.artifact(relative)
             if path.exists():
                 path.unlink()
+        for relative in LEGACY_HARNESS_DIRECTORIES:
+            path = ctx.artifact(relative)
+            if path.exists():
+                shutil.rmtree(path)
 
 
 class ConstraintLoadingStage(HarnessStage):
