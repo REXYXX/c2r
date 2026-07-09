@@ -216,7 +216,7 @@ def _derive_benchmark(source: Path, profile: dict[str, Any]) -> dict[str, Any]:
     if not spec:
         return {}
     bench_source = str(spec.get("source", "tests/benchmark/bench_main.c"))
-    bench_config = str(spec.get("config", "tests/benchmark/fdb_cfg.h"))
+    bench_config = str(spec.get("config") or "")
     rust_target = str(spec.get("rust_target", "tests/benchmark_tests.rs"))
     config_text = read_text(source / bench_config) if bench_config else ""
     bench_text = read_text(source / bench_source)

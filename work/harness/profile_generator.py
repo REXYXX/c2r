@@ -255,13 +255,8 @@ def _benchmark_discovery(source: Path) -> dict[str, Any]:
         )
         if bench_sources:
             source_file = bench_sources[0]
-            config = ""
             source_dir = source / Path(source_file).parent
-            for name in ("fdb_cfg.h", "config.h", "bench_config.h"):
-                candidate = source_dir / name
-                if candidate.exists():
-                    config = _relative(candidate, source)
-                    break
+            config = _benchmark_config_header(source, source_dir)
             return {
                 "source": source_file,
                 "config": config,
@@ -275,6 +270,24 @@ def _benchmark_discovery(source: Path) -> dict[str, Any]:
                 ],
             }
     return {}
+
+
+def _benchmark_config_header(source: Path, source_dir: Path) -> str:
+    candidates = []
+    for candidate in source_dir.glob("*.h"):
+        name = candidate.name.lower()
+        score = 0
+        if "config" in name or "cfg" in name:
+            score += 4
+        if "bench" in name:
+            score += 2
+        if "test" in name:
+            score += 1
+        if score:
+            candidates.append((score, -len(name), name, candidate))
+    if not candidates:
+        return ""
+    return _relative(max(candidates)[3], source)
 
 
 def _constraint_summary() -> str:

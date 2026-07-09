@@ -123,24 +123,86 @@ def _module_from_target(target: str) -> str:
     return path.stem if path.suffix else str(target)
 
 
+def _as_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    return [str(value)]
+
+
+def _identifier_tokens(value: str) -> list[str]:
+    snake = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", str(value))
+    return [token for token in re.split(r"[^A-Za-z0-9]+", snake.lower()) if token]
+
+
+def _api_prefix_tokens(profile: dict[str, Any]) -> set[str]:
+    tokens: set[str] = set()
+    for prefix in _as_list(profile.get("api_equivalent_prefixes")):
+        tokens.update(_identifier_tokens(prefix))
+    return tokens
+
+
+def _module_match_score(api: str, module: str, ignored_api_tokens: set[str]) -> int:
+    api_tokens = [token for token in _identifier_tokens(api) if token not in ignored_api_tokens]
+    module_tokens = _identifier_tokens(module)
+    score = 0
+    for module_token in module_tokens:
+        for api_token in api_tokens:
+            if module_token == api_token:
+                score += len(module_token) * 3
+            elif len(module_token) >= 2 and len(api_token) >= 2 and (
+                module_token.startswith(api_token) or api_token.startswith(module_token)
+            ):
+                score += min(len(module_token), len(api_token))
+    return score
+
+
 def _assign_public_apis_to_modules(profile: dict[str, Any]) -> dict[str, list[str]]:
-    public_apis = set((profile.get("c_api_parity_symbols", {}) or {}).get("public_api", []) or [])
+    api_groups = profile.get("c_api_parity_symbols", {}) or {}
+    public_apis = sorted({api for values in api_groups.values() for api in _as_list(values)})
+    source_to_rust = profile.get("source_to_rust_modules", {}) or {}
+    api_source_modules = profile.get("public_api_source_modules", {}) or {}
+    modules = sorted(
+        {
+            _module_from_target(str(module))
+            for values in source_to_rust.values()
+            for module in _as_list(values)
+            if str(module).startswith("src/") and _module_from_target(str(module)) != "lib"
+        }
+    )
+    ignored_api_tokens = _api_prefix_tokens(profile)
     assigned: dict[str, set[str]] = {}
 
     def add(module: str, api: str) -> None:
-        assigned.setdefault(module, set()).add(api)
+        if module in modules:
+            assigned.setdefault(module, set()).add(api)
+
+    api_module_rules = profile.get("api_module_rules", {}) or {}
 
     for api in public_apis:
-        if any(api in values for values in assigned.values()):
+        source_modules = [_module_from_target(module) for module in _as_list(api_source_modules.get(api))]
+        for module in source_modules:
+            add(module, api)
+        if source_modules:
             continue
-        if api.startswith(("fdb_kvdb_", "fdb_kv_", "fdb_blob_")):
-            add("kvdb", api)
-        elif api.startswith(("fdb_tsdb_", "fdb_tsl_")):
-            add("tsdb", api)
-        elif api.startswith("fdb_calc_"):
-            add("utils", api)
-        else:
-            add("flashdb", api)
+
+        explicit_modules = []
+        for token, rule_modules in api_module_rules.items():
+            if str(token) and str(token) in api:
+                explicit_modules.extend(_as_list(rule_modules))
+        for module in explicit_modules:
+            add(_module_from_target(module), api)
+        if explicit_modules:
+            continue
+
+        scored = [(module, _module_match_score(api, module, ignored_api_tokens)) for module in modules]
+        best_score = max((score for _, score in scored), default=0)
+        if best_score <= 0:
+            continue
+        for module, score in scored:
+            if score == best_score:
+                add(module, api)
     return {module: sorted(values) for module, values in sorted(assigned.items())}
 
 
@@ -334,6 +396,7 @@ def write_code_manifest(
         "implementation_files": implementation_files,
         "test_files": test_files,
         "source_to_rust_modules": profile.get("source_to_rust_modules", {}),
+        "public_api_source_modules": profile.get("public_api_source_modules", {}),
         "api_symbols": profile.get("api_symbols", {}),
         "one_to_one_features": profile.get("one_to_one_features", {}),
         "behaviour_model_rejection": profile.get("behaviour_model_rejection", {}),

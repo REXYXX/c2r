@@ -22,7 +22,7 @@ from generic_harness import (
     write,
 )
 from model_artifacts import display_name, generate_report
-from profile_common import _duplicate_lookup, _effective_profile, _extract_rust_function_body
+from profile_common import _as_list, _duplicate_lookup, _effective_profile, _extract_rust_function_body
 from profile_trace import _record_profile_trace
 
 class ProfileValidationStage(HarnessStage):
@@ -59,11 +59,13 @@ class ProfileValidationStage(HarnessStage):
         else:
             cargo_test = run_cargo(ctx, ["test"])
         failures = self._validation_failures(checks, cargo_test, effective)
-        repair_required = self._repair_required(failures, cargo_test)
+        failure_ownership = self._failure_ownership(failures, cargo_test)
+        repair_required = self._repair_required(failures, failure_ownership)
         ctx.validation_result = {
             "status": "failed" if failures else "passed",
             "failures": failures,
             "repair_required": repair_required,
+            "failure_ownership": failure_ownership,
             "checks": checks,
             "cargo_test": cargo_test,
         }
@@ -185,9 +187,11 @@ class ProfileValidationStage(HarnessStage):
                 assertion_count = len(re.findall(r"\bassert(?:_eq|_ne)?!|\bassert\s*\(", body_code))
                 minimum_assertions = int(validation.get("minimum_assertions", 0) or 0)
                 has_loop = bool(re.search(r"\b(?:for|while|loop)\b|\.for_each\s*\(", body_code))
-                missing_api_calls = [token for token in required_api_calls if not self._has_equivalent_api_token(body_code, token)]
+                missing_api_calls = [
+                    token for token in required_api_calls if not self._has_equivalent_api_token(body_code, token, profile)
+                ]
                 missing_expanded_api_calls = [
-                    token for token in required_expanded_api_calls if not self._has_equivalent_api_token(text_code, token)
+                    token for token in required_expanded_api_calls if not self._has_equivalent_api_token(text_code, token, profile)
                 ]
                 advisory_missing_fields = [token for token in required_fields if token not in body_code]
                 advisory_missing_constants = [token for token in required_constants if self._token_count(body_code, token) == 0]
@@ -221,18 +225,15 @@ class ProfileValidationStage(HarnessStage):
             result[str(relative)] = test_results
         return result
 
-    def _has_equivalent_api_token(self, text: str, c_api: str) -> bool:
-        return any(self._token_count(text, token) > 0 for token in self._api_equivalent_tokens(c_api))
+    def _has_equivalent_api_token(self, text: str, c_api: str, profile: dict[str, Any]) -> bool:
+        return any(self._token_count(text, token) > 0 for token in self._api_equivalent_tokens(c_api, profile))
 
-    def _api_equivalent_tokens(self, c_api: str) -> list[str]:
+    def _api_equivalent_tokens(self, c_api: str, profile: dict[str, Any]) -> list[str]:
         token = str(c_api)
         candidates = [token]
-        prefixes = ("fdb_kvdb_", "fdb_tsdb_", "fdb_tsl_", "fdb_kv_", "fdb_blob_", "fdb_")
-        for prefix in prefixes:
+        for prefix in _as_list(profile.get("api_equivalent_prefixes")):
             if token.startswith(prefix):
                 candidates.append(token[len(prefix) :])
-        if token.startswith("fdb_"):
-            candidates.append(token[4:])
         return sorted({candidate for candidate in candidates if candidate})
 
     def _expected_rust_test_names(self, source_runs: list[str], suite: str, profile: dict[str, Any]) -> list[str]:
@@ -331,25 +332,88 @@ class ProfileValidationStage(HarnessStage):
             failures.append(f"cargo test skipped: {cargo_test.get('reason', 'unknown reason')}")
         return failures
 
-    def _repair_required(self, failures: list[str], cargo_test: dict[str, Any]) -> dict[str, Any]:
-        route: dict[str, Any] = {
-            "must_continue": bool(failures),
-            "next_action": "strict validation passed" if not failures else "repair routed failures and rerun strict validation",
+    def _failure_ownership(self, failures: list[str], cargo_test: dict[str, Any]) -> dict[str, Any]:
+        ownership: dict[str, Any] = {
+            "policy": (
+                "ValidationStage 先归因再修复。Test Agent 只修复测试生成缺陷，不能删除测试、"
+                "降低断言、缩小数据规模或替换目标 API 来绕过实现缺陷。语义完整测试运行失败时，"
+                "默认交给 Code Agent 修复实现；归因不明确时交给 Validation Agent 进一步诊断。"
+            ),
             "test_agent": [],
             "code_agent": [],
             "validation_agent": [],
+            "ambiguous": [],
         }
         for failure in failures:
-            if self._is_test_failure(failure):
-                route["test_agent"].append(failure)
-            elif failure.startswith("cargo test skipped"):
-                route["validation_agent"].append(failure)
-            elif failure == "cargo test failed":
-                route["validation_agent"].append("read cargo test diagnostics and route concrete src/tests failures")
-            else:
-                route["code_agent"].append(failure)
-        if cargo_test.get("status") == "failed" and "cargo test failed" not in failures:
-            route["validation_agent"].append("read cargo test diagnostics and route concrete src/tests failures")
+            owner, reason, action = self._classify_failure(failure, cargo_test)
+            ownership[owner].append(
+                {
+                    "failure": failure,
+                    "reason": reason,
+                    "allowed_action": action,
+                }
+            )
+        return ownership
+
+    def _classify_failure(self, failure: str, cargo_test: dict[str, Any]) -> tuple[str, str, str]:
+        if self._is_test_failure(failure):
+            return (
+                "test_agent",
+                "test_generation_or_coverage_gap",
+                "repair tests while preserving target API, data scale and assertion strength",
+            )
+        if failure.startswith("cargo test skipped"):
+            return (
+                "validation_agent",
+                "validation_not_executed",
+                "rerun strict validation with cargo available; skipped cargo is not a pass",
+            )
+        if failure == "cargo test failed":
+            output = "\n".join(str(cargo_test.get(key, "")) for key in ("stdout", "stderr"))
+            if re.search(r"-->\s+tests[/\\]", output) and re.search(r"error(?:\[E\d+\])?:", output):
+                return (
+                    "test_agent",
+                    "test_compile_error",
+                    "fix test harness code without simplifying test semantics",
+                )
+            if re.search(r"-->\s+src[/\\]|no method named|cannot find|unresolved import", output, re.I):
+                return (
+                    "code_agent",
+                    "implementation_compile_or_api_gap",
+                    "repair implementation or exported API exposed by tests",
+                )
+            return (
+                "validation_agent",
+                "cargo_failure_needs_routing",
+                "inspect cargo diagnostics and route concrete src/tests failures",
+            )
+        if failure.startswith(("missing constraint document:", "missing required artifact:")):
+            return (
+                "validation_agent",
+                "harness_artifact_or_constraint_missing",
+                "repair harness inputs or rerun profile harness before code/test repair",
+            )
+        return (
+            "code_agent",
+            "implementation_or_api_gap",
+            "repair Rust implementation instead of weakening tests",
+        )
+
+    def _repair_required(self, failures: list[str], failure_ownership: dict[str, Any]) -> dict[str, Any]:
+        route: dict[str, Any] = {
+            "must_continue": bool(failures),
+            "next_action": "strict validation passed" if not failures else "repair routed failures and rerun strict validation",
+            "ownership_policy": failure_ownership.get("policy", ""),
+            "test_agent": [],
+            "code_agent": [],
+            "validation_agent": [],
+            "ambiguous": [],
+        }
+        for owner in ("test_agent", "code_agent", "validation_agent", "ambiguous"):
+            for item in failure_ownership.get(owner, []):
+                route[owner].append(
+                    f"{item.get('failure', '')} [{item.get('reason', '')}] {item.get('allowed_action', '')}"
+                )
         return route
 
     def _is_test_failure(self, failure: str) -> bool:

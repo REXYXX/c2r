@@ -267,6 +267,7 @@ class ProfileProjectAnalysisStage(HarnessStage):
             for relative in include_files + src_files
             if relative.endswith((".c", ".h"))
         }
+        public_api_source_modules = self._derive_public_api_source_modules(source, src_files, public_apis, source_to_rust)
         return {
             "test_suites": test_suites,
             "duplicate_test_name_map": duplicate_test_name_map,
@@ -276,8 +277,10 @@ class ProfileProjectAnalysisStage(HarnessStage):
             "c_api_parity_modules": self._derive_c_api_parity_modules(source_to_rust, c_api_parity),
             "internal_parity_anchors": self._derive_internal_parity_anchors(source, src_files),
             "source_to_rust_modules": source_to_rust,
+            "public_api_source_modules": public_api_source_modules,
             "required_output_files": self._derive_required_output_files(source_to_rust, test_suites, readme_coverage),
             "api_symbols": self._derive_api_symbols(source_to_rust),
+            "api_equivalent_prefixes": self._derive_api_equivalent_prefixes(public_apis),
         }
 
     def _derive_test_suites(self, source: Path, test_files: list[str]) -> dict[str, dict[str, str]]:
@@ -443,7 +446,7 @@ class ProfileProjectAnalysisStage(HarnessStage):
                 "minimum_assertions": minimum_assertions,
                 "fields": assertion_fields[:8],
                 "expected_constants": assertion_constants[:8],
-                "rule": "断言类型和期望行为等价，例如 FDB_NO_ERR 可映射为 Rust 的 is_ok()。",
+                "rule": "断言类型和期望行为等价，例如 C 成功码可映射为 Rust 的 is_ok()。",
             },
         }
         static_validation = {
@@ -677,6 +680,41 @@ class ProfileProjectAnalysisStage(HarnessStage):
     def _derive_api_symbols(self, source_to_rust: dict[str, list[str]]) -> dict[str, list[str]]:
         modules = sorted({Path(module).stem for values in source_to_rust.values() for module in values if module.startswith("src/")})
         return {"src/lib.rs": [f"pub mod {module};" for module in modules if module != "lib"]}
+
+    def _derive_public_api_source_modules(
+        self,
+        source: Path,
+        src_files: list[str],
+        public_apis: list[str],
+        source_to_rust: dict[str, list[str]],
+    ) -> dict[str, list[str]]:
+        api_set = set(public_apis)
+        mapping: dict[str, list[str]] = {}
+        for relative in src_files:
+            text = read_text(source / relative)
+            for api in api_set:
+                if not self._has_function_definition(text, api):
+                    continue
+                for module in source_to_rust.get(relative, []):
+                    if module.startswith("src/"):
+                        _append_unique(mapping.setdefault(api, []), module)
+        return {api: modules for api, modules in sorted(mapping.items())}
+
+    def _has_function_definition(self, text: str, name: str) -> bool:
+        pattern = rf"(?:^|\n)\s*(?:static\s+)?[A-Za-z_][\w\s\*]*\s+{re.escape(name)}\s*\([^;{{}}]*\)\s*\{{"
+        return bool(re.search(pattern, text, re.M))
+
+    def _derive_api_equivalent_prefixes(self, public_apis: list[str]) -> list[str]:
+        prefix_counts: dict[str, int] = {}
+        for symbol in public_apis:
+            parts = [part for part in str(symbol).split("_") if part]
+            for index in range(1, len(parts)):
+                prefix = "_".join(parts[:index]) + "_"
+                prefix_counts[prefix] = prefix_counts.get(prefix, 0) + 1
+        return sorted(
+            (prefix for prefix, count in prefix_counts.items() if count >= 2),
+            key=lambda item: (-len(item), item),
+        )[:32]
 
     def _collect_source_test_runs(self, source: Path, profile: dict[str, Any]) -> dict[str, list[str]]:
         return {
