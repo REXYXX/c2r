@@ -9,6 +9,7 @@ profile 只作为可选覆盖层。
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -467,6 +468,26 @@ def write_agent_entries(
     return paths
 
 
+def attach_rendered_task_hashes(result: Path) -> None:
+    base = result / "harness" / "agent-entry"
+    for name in ("code-agent", "test-agent", "validation-agent"):
+        entry_path = base / f"{name}.json"
+        if not entry_path.exists():
+            continue
+        payload = json.loads(entry_path.read_text(encoding="utf-8"))
+        task_path = Path(str(payload.get("rendered_task", "")))
+        if not task_path.exists():
+            continue
+        data = task_path.read_bytes()
+        payload["rendered_task_sha256"] = hashlib.sha256(data).hexdigest()
+        payload["rendered_task_bytes"] = len(data)
+        payload["prompt_integrity"] = {
+            "must_use_rendered_task_verbatim": True,
+            "mismatch_action": "stop and rerun bootstrap; do not use handwritten, cached, summarized, or external prompts",
+        }
+        write_json(entry_path, payload)
+
+
 def generate_model_brief(
     root: Path,
     source: Path,
@@ -572,6 +593,7 @@ def generate_model_brief(
     write(result / "harness" / "04-test-agent-task.md", test_brief)
     write(result / "VALIDATION_AGENT_TASK.md", validation_brief)
     write(result / "harness" / "04-validation-agent-task.md", validation_brief)
+    attach_rendered_task_hashes(result)
 
 
 def generate_report(
