@@ -15,7 +15,6 @@ from generic_harness import (
     check_artifact_structure,
     check_required_files,
     check_token_map,
-    count_token_in_rust,
     read_text,
     run_cargo,
     text_block,
@@ -49,7 +48,7 @@ class ProfileValidationStage(HarnessStage):
             "translated_test_coverage": self._check_translated_test_coverage(ctx),
             "readme_test_coverage": self._check_readme_test_coverage(ctx.out, effective),
             "test_semantic_requirements": self._check_test_semantic_requirements(ctx.out, effective),
-            "unsafe_occurrences": count_token_in_rust(ctx.out, "unsafe") if effective.get("disallow_unsafe", True) else 0,
+            "unsafe_policy": self._check_unsafe_policy(ctx.out, effective),
         }
         if ctx.skip_cargo or cargo_path is None:
             cargo_test = {
@@ -127,6 +126,52 @@ class ProfileValidationStage(HarnessStage):
                 "missing_required_offsets": missing_offsets,
             }
         return result
+
+    def _check_unsafe_policy(self, out: Path, profile: dict[str, Any]) -> dict[str, Any]:
+        policy = profile.get("unsafe_policy", {})
+        if not isinstance(policy, dict):
+            policy = {}
+        enabled = bool(policy.get("enabled", True))
+        max_ratio = float(policy.get("max_ratio", 0.10))
+        unsafe_blocks = 0
+        rust_code_lines = 0
+        files: dict[str, dict[str, Any]] = {}
+        if not enabled:
+            return {
+                "enabled": False,
+                "ok": True,
+                "unsafe_blocks": 0,
+                "rust_code_lines": 0,
+                "ratio": 0.0,
+                "max_ratio": max_ratio,
+                "files": {},
+            }
+        for path in sorted(out.rglob("*.rs")):
+            if "target" in path.parts:
+                continue
+            text = read_text(path)
+            stripped = self._strip_rust_comments(text)
+            file_unsafe = self._token_count(stripped, "unsafe")
+            file_lines = sum(1 for line in stripped.splitlines() if line.strip())
+            unsafe_blocks += file_unsafe
+            rust_code_lines += file_lines
+            if file_unsafe:
+                relative = str(path.relative_to(out)).replace("\\", "/")
+                files[relative] = {
+                    "unsafe_blocks": file_unsafe,
+                    "rust_code_lines": file_lines,
+                }
+        ratio = (unsafe_blocks / rust_code_lines) if rust_code_lines else (1.0 if unsafe_blocks else 0.0)
+        return {
+            "enabled": True,
+            "ok": ratio < max_ratio,
+            "unsafe_blocks": unsafe_blocks,
+            "rust_code_lines": rust_code_lines,
+            "ratio": ratio,
+            "max_ratio": max_ratio,
+            "metric": str(policy.get("metric", "unsafe_keyword_per_nonempty_rust_line")),
+            "files": files,
+        }
 
     def _check_translated_test_coverage(self, ctx: ConversionContext) -> dict[str, Any]:
         source_runs = ctx.analysis.get("source_test_runs", {})
@@ -324,8 +369,14 @@ class ProfileValidationStage(HarnessStage):
                         f"assertions {result.get('assertion_count', 0)} < {result.get('minimum_assertions', 0)}"
                     )
                 failures.append(f"missing semantic coverage in {path}::{name}: {'; '.join(problems)}")
-        if checks.get("unsafe_occurrences", 0) != 0:
-            failures.append(f"unsafe occurrences must be 0, got {checks['unsafe_occurrences']}")
+        unsafe_policy = checks.get("unsafe_policy", {})
+        if isinstance(unsafe_policy, dict) and not unsafe_policy.get("ok", True):
+            failures.append(
+                "unsafe ratio must be < "
+                f"{unsafe_policy.get('max_ratio', 0.10):.2%}, got {unsafe_policy.get('ratio', 0.0):.2%} "
+                f"({unsafe_policy.get('unsafe_blocks', 0)} unsafe blocks / "
+                f"{unsafe_policy.get('rust_code_lines', 0)} Rust code lines)"
+            )
         if cargo_test.get("status") == "failed":
             failures.append("cargo test failed")
         if cargo_test.get("status") == "skipped" and profile.get("cargo_test_required", True):

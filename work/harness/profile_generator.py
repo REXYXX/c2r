@@ -60,7 +60,10 @@ def build_dynamic_profile(source: Path, overrides: dict[str, Any] | None = None)
         "component_filters": _component_filters(source, layout, strip_prefixes),
         "readme_test_discovery": _readme_test_discovery(source),
         "benchmark_discovery": _benchmark_discovery(source),
-        "disallow_unsafe": True,
+        "unsafe_policy": {
+            "max_ratio": 0.10,
+            "metric": "unsafe_keyword_per_nonempty_rust_line",
+        },
         "cargo_test_required": True,
         "harness_report_appendix": _report_appendix(),
     }

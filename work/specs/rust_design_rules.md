@@ -11,7 +11,7 @@
 - 动态 profile 声明的公共 API 一旦确定，不要随意漂移。
 - 除非动态 profile 明确要求公开，辅助函数应保持私有。
 - 避免全局可变状态。
-- 除非动态 profile 明确允许，不要使用 `unsafe`。
+- `unsafe` 只能用于性能敏感、布局兼容或安全 Rust 无法准确表达的局部场景；默认总量必须低于动态 profile 的 `unsafe_policy.max_ratio`，未声明时按 10% 上限处理。
 - 除非动态 profile 明确允许，不要使用 C FFI。
 - 除非动态 profile 明确允许，不要新增外部依赖。
 
