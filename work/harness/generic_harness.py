@@ -74,6 +74,7 @@ class ConversionContext:
     compile_result: dict[str, Any] = field(default_factory=dict)
     validation_result: dict[str, Any] = field(default_factory=dict)
     constraints: list[dict[str, Any]] = field(default_factory=list)
+    document_constraints: dict[str, Any] = field(default_factory=dict)
     stage_history: list[dict[str, Any]] = field(default_factory=list)
 
     def artifact(self, relative: str) -> Path:

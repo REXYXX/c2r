@@ -90,6 +90,7 @@ class ProfileProjectAnalysisStage(HarnessStage):
             "source_test_runs": source_test_runs,
             "public_apis": public_apis,
             "internal_parity_anchors": internal_anchors,
+            "document_constraints": ctx.document_constraints,
             "derived_profile": derived_profile,
             "effective_profile": effective_profile,
         }
@@ -174,6 +175,7 @@ class ProfileProjectAnalysisStage(HarnessStage):
                 str(target): len(tests) for target, tests in sorted(semantic.items()) if isinstance(tests, dict)
             },
             "benchmark_tests": len(benchmark.get("operation_tests", [])),
+            "project_documents": ctx.document_constraints.get("summary", {}),
             "model_entrypoints": {
                 "code_agent": "result/harness/agent-entry/code-agent.json",
                 "test_agent": "result/harness/agent-entry/test-agent.json",
@@ -204,6 +206,8 @@ class ProfileProjectAnalysisStage(HarnessStage):
             - public API count: {summary.get("public_api_count")}
             - required output files: {summary.get("required_output_files")}
             - benchmark tests: {summary.get("benchmark_tests")}
+            - project documents: {summary.get("project_documents", {}).get("document_count", 0)}
+            - document constraints: {summary.get("project_documents", {}).get("constraint_count", 0)}
             - full analysis/profile artifacts: not emitted
 
             ## Required Test Targets

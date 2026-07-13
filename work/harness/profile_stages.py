@@ -118,6 +118,7 @@ class ProfileTranslationStage(HarnessStage):
             - Agent entry manifest：`{ctx.result / "harness" / "agent-entry" / "manifest.json"}`
             - Code Agent plan：`{ctx.result / "harness" / "code-plan.json"}`
             - Code Agent manifest：`{ctx.result / "harness" / "code-manifest.json"}`
+            - 项目文档规范：`{ctx.result / "harness" / "00-project-document-constraints.json"}`
             - Test requirement manifest：`{ctx.result / "harness" / "test-requirements" / "manifest.json"}`
             - 执行框架主任务书：`{ctx.result / "harness" / "04-model-generation-brief.md"}`
             - parity 矩阵：`{ctx.result / "harness" / "04-function-parity.json"}`
@@ -125,7 +126,7 @@ class ProfileTranslationStage(HarnessStage):
             主线程只做编排，不读取 C 源码或 Rust `src/tests`；
             Code Agent 实现 `src/*.rs`；Test Agent 生成 `tests/*.rs`；
             Validation Agent 运行 strict 验证并返回失败摘要。
-            全量 analysis/profile 文件默认不生成；Agent 只读取 plan、manifest、
+            全量 analysis/profile 文件默认不生成；Agent 读取项目文档规范、plan、manifest、
             测试需求文件或验证结果，不展开完整测试语义矩阵。
             """,
         )
@@ -148,6 +149,8 @@ class ProfileTranslationStage(HarnessStage):
                 "result/harness/agent-entry/validation-agent.json",
                 "result/harness/code-plan.json",
                 "result/harness/code-manifest.json",
+                "result/harness/00-project-document-constraints.json",
+                "result/harness/00-project-document-constraints.md",
                 "result/harness/test-requirements/manifest.json",
                 "result/harness/04-model-generation-brief.md",
                 "result/harness/04-test-agent-task.md",

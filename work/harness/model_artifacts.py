@@ -21,6 +21,18 @@ from typing import Any
 AGENT_PLACEHOLDER_RE = re.compile(r"\{\{([A-Za-z0-9_]+)\}\}")
 
 
+def document_constraint_reference(categories: list[str]) -> dict[str, Any]:
+    return {
+        "index": "result/harness/00-project-document-constraints.json",
+        "summary": "result/harness/00-project-document-constraints.md",
+        "categories": {
+            category: f"result/harness/document-constraints/{category}.json"
+            for category in categories
+        },
+        "loading_policy": "先读轻量索引，再按当前任务加载相关分类；不要默认加载全部分类。",
+    }
+
+
 def write(path: Path, data: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(textwrap.dedent(data).lstrip(), encoding="utf-8", newline="\n")
@@ -238,6 +250,13 @@ def write_code_plan(
         "policy_doc": "work/agents/code-agent.md",
         "generation_steps": [
             {
+                "step": "document_contract",
+                "goal": "先读取项目文档规范，落实 MUST/SHOULD 约束并保留来源；遇到冲突时记录证据，禁止静默猜测。",
+                "inputs": [
+                    "result/harness/00-project-document-constraints.json",
+                ],
+            },
+            {
                 "step": "crate_skeleton",
                 "goal": "创建所有 implementation_files，并让 src/lib.rs 暴露 api_symbols 中的模块声明。",
                 "inputs": ["result/harness/code-plan.json", "result/harness/code-manifest.json"],
@@ -259,6 +278,9 @@ def write_code_plan(
             },
         ],
         "implementation_files": implementation_files,
+        "document_constraints": document_constraint_reference(
+            ["api_contract", "configuration", "porting", "architecture", "usage", "overview"]
+        ),
         "api_symbols": profile.get("api_symbols", {}),
         "modules": modules,
     }
@@ -316,6 +338,9 @@ def write_test_requirement_files(
     manifest: dict[str, Any] = {
         "description": "测试需求索引。",
         "policy_doc": "work/agents/test-agent.md",
+        "document_constraints": document_constraint_reference(
+            ["testing", "usage", "api_contract", "configuration"]
+        ),
         "targets": {},
     }
     for target in targets:
@@ -401,6 +426,9 @@ def write_code_manifest(
         "api_symbols": profile.get("api_symbols", {}),
         "one_to_one_features": profile.get("one_to_one_features", {}),
         "behaviour_model_rejection": profile.get("behaviour_model_rejection", {}),
+        "document_constraints": document_constraint_reference(
+            ["api_contract", "configuration", "porting", "architecture", "usage", "overview"]
+        ),
         "code_plan": "result/harness/code-plan.json",
         "parity_matrix": "result/harness/04-function-parity.json",
     }
@@ -434,17 +462,31 @@ def write_agent_entries(
             "source_doc": "work/agents/code-agent.md",
             "rendered_task": str(result / "MODEL_TASK.md"),
             "summary": code_manifest_summary,
+            "required_inputs": [
+                "result/harness/00-project-document-constraints.json",
+                "result/harness/code-plan.json",
+                "result/harness/code-manifest.json",
+                "result/harness/04-function-parity.json",
+            ],
         },
         "test-agent": {
             "agent": "test_agent",
             "source_doc": "work/agents/test-agent.md",
             "rendered_task": str(result / "TEST_AGENT_TASK.md"),
             "summary": test_requirement_summary,
+            "required_inputs": [
+                "result/harness/00-project-document-constraints.json",
+                "result/harness/test-requirements/manifest.json",
+            ],
         },
         "validation-agent": {
             "agent": "validation_agent",
             "source_doc": "work/agents/validation-agent.md",
             "rendered_task": str(result / "VALIDATION_AGENT_TASK.md"),
+            "required_inputs": [
+                "result/harness/00-project-document-constraints.json",
+                "result/harness/07-validation.json",
+            ],
         },
     }
     paths: dict[str, str] = {}
@@ -576,6 +618,8 @@ def generate_model_brief(
         "code_manifest_path": result / "harness" / "code-manifest.json",
         "test_requirements_manifest": result / "harness" / "test-requirements" / "manifest.json",
         "parity_matrix": result / "harness" / "04-function-parity.json",
+        "document_constraints_json": result / "harness" / "00-project-document-constraints.json",
+        "document_constraints_md": result / "harness" / "00-project-document-constraints.md",
         "constraint_files_bullets": bullets(constraint_files),
         "required_test_files_bullets": bullets(test_files),
         "agent_entries_json": json_block(agent_entries),

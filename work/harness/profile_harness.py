@@ -13,6 +13,7 @@ from generic_harness import (
     write,
 )
 from profile_analysis import ProfileProjectAnalysisStage
+from profile_documents import ProjectDocumentStage
 from profile_stages import (
     ProfileParityMatrixStage,
     ProfileSkeletonGenerationStage,
@@ -26,6 +27,7 @@ def build_profile_stages(profile: dict[str, Any], include_validation: bool = Fal
     stages: list[HarnessStage] = [
         OutputScaffoldStage(),
         ConstraintLoadingStage(profile.get("constraint_files", []), profile.get("constraint_summary_md")),
+        ProjectDocumentStage(profile),
         ProfileProjectAnalysisStage(profile),
         ProfileSkeletonGenerationStage(profile),
         ProfileParityMatrixStage(profile),
@@ -62,6 +64,7 @@ def _write_bootstrap_report(ctx: ConversionContext) -> None:
         - 验证阶段：`not_run`
         - Rust 输出目录：`{ctx.out}`
         - Profile 摘要：`{ctx.result / "harness" / "01-profile-summary.md"}`
+        - 项目文档规范：`{ctx.result / "harness" / "00-project-document-constraints.json"}`
         - Code Agent 任务书：`{ctx.result / "MODEL_TASK.md"}`
         - Test Agent 任务书：`{ctx.result / "TEST_AGENT_TASK.md"}`
         - Validation Agent 任务书：`{ctx.result / "VALIDATION_AGENT_TASK.md"}`

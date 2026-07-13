@@ -19,6 +19,12 @@
 
 {{required_test_files_bullets}}
 
+## 文档约束
+
+- 首先读取轻量索引 `{{document_constraints_json}}`，再按 test requirement manifest 中的 `document_constraints.categories` 加载 `testing`、`usage`、`api_contract` 或 `configuration` 分片；禁止默认加载全部分类。
+- README、用例和 API 文档声明的错误条件、状态变化、配置前提与使用顺序必须进入测试覆盖，不能只迁移源码中已有的 happy path。
+- 文档与 C 测试冲突时保留两边证据，不得通过削弱断言自行消除冲突。
+
 ## 测试文件级 subagent 分发
 
 Test Agent 主上下文只负责任务拆分、汇总和交回验证，不直接展开所有测试实现。

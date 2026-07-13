@@ -19,6 +19,7 @@ cargo test
 
 ## 必读验证产物
 
+- `{{document_constraints_json}}`
 - `{{validation_json}}`
 - `{{issue_summary}}`
 - `{{trace_json}}`
@@ -26,6 +27,8 @@ cargo test
 ## 诊断边界
 
 - 优先归类编译错误、缺失 API token、缺失测试、README/benchmark 覆盖失败。
+- 核对实现与测试是否遗漏文档中的 `must` 约束；遗漏实现归 Code Agent，遗漏行为测试归 Test Agent。
+- 只在具体失败涉及某类约束时加载对应分类分片，不要把全部文档约束回灌给 Code/Test Agent。
 - `src/*.rs` 或 `Cargo.toml` 问题交回 Code Agent。
 - `tests/*.rs` 问题交回 Test Agent。
 - `repair_required.test_agent` 非空时，本轮不能判定完成，必须要求 Test Agent 修复后复验。

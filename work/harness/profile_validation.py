@@ -37,7 +37,12 @@ class ProfileValidationStage(HarnessStage):
         checks = {
             "required_artifact_structure": check_artifact_structure(
                 ctx,
-                [("result_function_parity_json", ctx.result / "harness" / "04-function-parity.json")],
+                [
+                    ("project_document_constraints_json", ctx.result / "harness" / "00-project-document-constraints.json"),
+                    ("project_document_constraints_md", ctx.result / "harness" / "00-project-document-constraints.md"),
+                    ("project_document_catalog_json", ctx.result / "harness" / "document-constraints" / "documents.json"),
+                    ("result_function_parity_json", ctx.result / "harness" / "04-function-parity.json"),
+                ],
             ),
             "constraint_docs": {item["path"]: item["exists"] for item in ctx.constraints},
             "required_files": check_required_files(ctx.out, effective.get("required_output_files", [])),
@@ -491,6 +496,7 @@ class ProfileValidationStage(HarnessStage):
 
             - OutputScaffoldStage：创建 result 和 logs 产物结构。
             - ConstraintLoadingStage：加载 markdown profile 约束。
+            - ProjectDocumentStage：在源码分析前读取项目文档并生成规范化约束。
             - ProjectAnalysisStage：生成源码清单和组件分组。
             - SkeletonGenerationStage：准备 Cargo crate 布局。
             - ParityMatrixStage：生成 profile 提供的 parity 矩阵。

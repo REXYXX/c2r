@@ -55,6 +55,21 @@ def build_dynamic_profile(source: Path, overrides: dict[str, Any] | None = None)
         },
         "constraint_files": ["work/specs/rust_design_rules.md"],
         "constraint_summary_md": _constraint_summary(),
+        "documentation_discovery": {
+            "enabled": True,
+            "include_suffixes": [".md", ".markdown", ".mdown", ".rst", ".txt", ".adoc"],
+            "max_files": 80,
+            "max_bytes_per_file": 524288,
+            "max_constraints_per_file": 80,
+            "max_total_constraints": 800,
+            "precedence": [
+                "manual profile overrides",
+                "project documentation for intended behavior and usage",
+                "public headers for ABI and type signatures",
+                "executable tests for observable behavior",
+                "C implementation for details not specified elsewhere",
+            ],
+        },
         "source_layout": layout,
         "module_name_strip_prefixes": strip_prefixes,
         "component_filters": _component_filters(source, layout, strip_prefixes),
@@ -296,7 +311,8 @@ def _benchmark_config_header(source: Path, source_dir: Path) -> str:
 def _constraint_summary() -> str:
     return (
         "# 约束加载\n\n"
-        "执行框架会加载通用 Rust 设计规则，并从输入 C 工程实时分析 API、测试、"
+        "执行框架会先加载通用 Rust 设计规则，再优先读取输入工程的 README、API、"
+        "用例、测试、配置和移植文档，形成带来源的规范化约束；之后才分析 C 源码、"
         "benchmark、源码映射和内部锚点。markdown profile 仅作为可选人工覆盖层。\n\n"
         "必读文档：\n\n- `work/specs/rust_design_rules.md`"
     )
@@ -308,6 +324,7 @@ def _report_appendix() -> str:
         "执行框架产物位于 `{harness_dir}`。\n\n"
         "- OutputScaffoldStage：创建 result/logs 产物结构。\n"
         "- ConstraintLoadingStage：加载通用约束和可选 profile 覆盖项。\n"
+        "- ProjectDocumentStage：优先读取项目 README、API、用例和测试文档，生成规范化约束。\n"
         "- ProjectAnalysisStage：从 C 工程实时生成 effective profile、API、测试、benchmark、源码映射和内部锚点。\n"
         "- SkeletonGenerationStage：准备 Cargo crate 布局。\n"
         "- ParityMatrixStage：生成公共 API 与源码锚点矩阵。\n"
